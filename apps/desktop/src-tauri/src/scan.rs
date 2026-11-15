@@ -579,6 +579,13 @@ card0,17163091968,0
         assert_eq!(free_space_for(&disks, Path::new("relative")), None);
     }
 
+    /// The real scan of this machine: `cargo test scan_this_machine -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn scan_this_machine() {
+        println!("{}", serde_json::to_string_pretty(&scan()).unwrap());
+    }
+
     #[test]
     fn backend_serializes_lowercase() {
         assert_eq!(serde_json::to_string(&Backend::Cuda).unwrap(), "\"cuda\"");
