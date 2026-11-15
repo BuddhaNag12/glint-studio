@@ -1,5 +1,5 @@
-//! First-run install of the core runtime (uv, Python 3.12, a venv, the host's dependencies) and
-//! starting the host. Every install step is safe to re-run: finished work is skipped or is a fast no-op.
+//! First-run install of the core runtime (uv, Python 3.12, a venv, the host's dependencies), the
+//! optional local engine (PyTorch for this machine's GPU, ComfyUI), and starting them. Every install step is safe to re-run: finished work is skipped or is a fast no-op.
 //! The host's own code ships inside the app (bundle resources); only its dependencies come from PyPI.
 
 use std::fs;
@@ -16,6 +16,7 @@ use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, State};
 
 use crate::paths::{Paths, exe};
+use crate::scan::{self, Backend, Vendor};
 use crate::supervisor::{ProcessSpec, ProcessStatus, Supervisor, free_port};
 
 const UV_VERSION: &str = "0.13.8";
@@ -33,6 +34,13 @@ const HOST: &str = "host";
 /// A broken host restarts with backoff before the supervisor gives up (~35 s), so wait a bit longer.
 const HOST_START_TIMEOUT: Duration = Duration::from_secs(45);
 
+const COMFYUI: &str = "comfyui";
+const COMFYUI_VERSION: &str = "0.45.0";
+/// sha256 of GitHub's tag tarball for COMFYUI_VERSION.
+const COMFYUI_SHA: &str = "408670ede5da641b30a2b3f1e39e5b84d75c12357e75695416a6e6cc5bcbc4bb";
+/// Importing torch is slow on a first, cold start.
+const COMFYUI_START_TIMEOUT: Duration = Duration::from_secs(180);
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Step {
@@ -40,6 +48,8 @@ pub enum Step {
     Python,
     Venv,
     Host,
+    Torch,
+    Comfyui,
 }
 
 /// Sent to the UI as each step starts (`done: false`) and finishes (`done: true`).
@@ -80,31 +90,65 @@ pub async fn install_core(app: AppHandle, state: State<'_, Runtime>, on_progress
     .map_err(|e| e.to_string())?
 }
 
+/// PyTorch for this machine's GPU, then ComfyUI and its dependencies. Needs `install_core` first.
+#[tauri::command]
+pub async fn install_engine(app: AppHandle, state: State<'_, Runtime>, on_progress: Channel<Progress>) -> Result<(), String> {
+    let _guard = state.installing.lock().await;
+    let paths = app_paths(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let index = torch_index_for(&scan::scan());
+        setup_engine(&paths, index, |p| {
+            let _ = on_progress.send(p); // the window may be gone; the install carries on
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Starts the host, and ComfyUI too when the engine is installed (the host is pointed at it).
 #[tauri::command]
 pub async fn start_host(app: AppHandle, state: State<'_, Runtime>) -> Result<HostInfo, String> {
     let mut host = state.host.lock().await;
     let supervisor = state.supervisor.clone();
+    let paths = app_paths(&app)?;
+    let engine = engine_installed(&paths);
     if let Some(info) = host.as_ref() {
-        if supervisor.status(HOST) == ProcessStatus::Running {
+        let running = |name| supervisor.status(name) == ProcessStatus::Running;
+        if running(HOST) && (!engine || running(COMFYUI)) {
             return Ok(info.clone());
         }
     }
-    let paths = app_paths(&app)?;
     if !paths.venv_python().exists() {
         return Err("The runtime isn't installed yet.".into());
     }
-    for dir in [paths.outputs(), paths.styles(), paths.workflows()] {
+    let mut dirs = vec![paths.outputs(), paths.styles(), paths.workflows()];
+    if engine {
+        // ComfyUI exits if custom_nodes is missing, and --models-directory must exist.
+        dirs.extend([paths.comfyui_data().join("custom_nodes"), paths.models()]);
+    }
+    for dir in dirs {
         fs::create_dir_all(&dir).map_err(|e| format!("Couldn't create {}: {e}", dir.display()))?;
     }
     let port = free_port().map_err(|e| e.to_string())?;
     let info = HostInfo { url: format!("http://127.0.0.1:{port}"), api_key: new_key()? };
-    let spec = host_spec(&paths, &resource_dir(&app)?, port, &info.api_key);
-    let log = spec.log_file.clone();
+    let mut spec = host_spec(&paths, &resource_dir(&app)?, port, &info.api_key);
+    let mut waits = vec![(HOST, HOST_START_TIMEOUT, spec.log_file.clone())];
+    if engine {
+        let comfy_port = free_port().map_err(|e| e.to_string())?;
+        point_host_at_comfyui(&mut spec, &paths, comfy_port);
+        let comfy = comfyui_spec(&paths, comfy_port);
+        waits.push((COMFYUI, COMFYUI_START_TIMEOUT, comfy.log_file.clone()));
+        supervisor.start(comfy).map_err(|e| format!("Couldn't start ComfyUI: {e}"))?;
+    }
     supervisor.start(spec).map_err(|e| format!("Couldn't start the host: {e}"))?;
-    tauri::async_runtime::spawn_blocking(move || wait_running(&supervisor, HOST, HOST_START_TIMEOUT))
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| format!("{e}\n{}", log_tail(&log, 15)))?;
+    tauri::async_runtime::spawn_blocking(move || {
+        for (name, timeout, log) in waits {
+            wait_running(&supervisor, name, timeout).map_err(|e| format!("{e}\n{}", log_tail(&log, 15)))?;
+        }
+        Ok::<_, String>(())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
     *host = Some(info.clone());
     Ok(info)
 }
@@ -137,10 +181,114 @@ pub fn install(paths: &Paths, host_dir: &Path, report: impl Fn(Progress)) -> Res
                     .arg("-r")
                     .arg(host_dir.join("pyproject.toml")),
             )?,
+            Step::Torch | Step::Comfyui => unreachable!("engine steps run in setup_engine"),
         }
         report(Progress { step, done: true });
     }
     Ok(())
+}
+
+/// Torch, then ComfyUI's code and requirements (torch is already satisfied, so it stays as installed).
+/// `index` is the PyTorch wheel index for this machine; None means PyPI.
+pub fn setup_engine(paths: &Paths, index: Option<&str>, report: impl Fn(Progress)) -> Result<(), String> {
+    // shortcut: no byte progress for the GB-sized torch download; stream uv's output if the wait confuses people.
+    let pip = || {
+        let mut cmd = uv(paths);
+        cmd.args(["pip", "install", "--python"]).arg(paths.venv_python());
+        cmd
+    };
+    report(Progress { step: Step::Torch, done: false });
+    let mut torch = pip();
+    torch.args(["torch", "torchvision"]);
+    if let Some(index) = index {
+        torch.args(["--index-url", index]);
+    }
+    run(&mut torch)?;
+    report(Progress { step: Step::Torch, done: true });
+
+    report(Progress { step: Step::Comfyui, done: false });
+    ensure_comfyui(paths)?;
+    let code = comfyui_code(paths);
+    run(pip().arg("-r").arg(code.join("requirements.txt")))?;
+    fs::write(code.join(READY_MARKER), "").map_err(|e| e.to_string())?;
+    report(Progress { step: Step::Comfyui, done: true });
+    Ok(())
+}
+
+fn torch_index_for(hw: &scan::HardwareProfile) -> Option<&'static str> {
+    let driver = hw.gpus.iter().find(|g| g.vendor == Vendor::Nvidia).and_then(|g| g.driver.as_deref());
+    torch_index(&hw.os, hw.backend, driver)
+}
+
+/// Which PyTorch wheels fit this machine. CUDA 13 wheels need driver 580+; older drivers get CUDA 12.6.
+/// macOS (Apple GPU or CPU) uses the default PyPI build.
+fn torch_index(os: &str, backend: Backend, nvidia_driver: Option<&str>) -> Option<&'static str> {
+    match backend {
+        Backend::Mps => None,
+        Backend::Cpu if os == "macos" => None,
+        Backend::Cpu => Some("https://download.pytorch.org/whl/cpu"),
+        Backend::Cuda => {
+            let major = nvidia_driver.and_then(|d| d.split('.').next()?.trim().parse::<u32>().ok());
+            Some(if major.is_some_and(|m| m >= 580) {
+                "https://download.pytorch.org/whl/cu130"
+            } else {
+                "https://download.pytorch.org/whl/cu126"
+            })
+        }
+        Backend::Rocm => Some("https://download.pytorch.org/whl/rocm7.2"),
+        Backend::Xpu => Some("https://download.pytorch.org/whl/xpu"),
+    }
+}
+
+const READY_MARKER: &str = ".glint-ready";
+
+/// ComfyUI's code, one folder per pinned version.
+fn comfyui_code(paths: &Paths) -> PathBuf {
+    paths.runtime().join(format!("ComfyUI-{COMFYUI_VERSION}"))
+}
+
+/// Written once ComfyUI's requirements are installed, so a half-done install isn't started.
+fn engine_installed(paths: &Paths) -> bool {
+    comfyui_code(paths).join(READY_MARKER).exists()
+}
+
+fn ensure_comfyui(paths: &Paths) -> Result<(), String> {
+    let code = comfyui_code(paths);
+    if code.join("main.py").exists() {
+        return Ok(()); // unpacked elsewhere and moved in whole, so main.py means complete
+    }
+    let url = format!("https://github.com/comfyanonymous/ComfyUI/archive/refs/tags/v{COMFYUI_VERSION}.tar.gz");
+    let tmp = fetch_and_unpack(paths, &url, COMFYUI_SHA, "ComfyUI")?;
+    let _ = fs::remove_dir_all(&code);
+    fs::rename(tmp.join(format!("ComfyUI-{COMFYUI_VERSION}")), &code).map_err(|e| e.to_string())?;
+    let _ = fs::remove_dir_all(&tmp);
+    Ok(())
+}
+
+/// ComfyUI on localhost only; the host is its one client.
+pub fn comfyui_spec(paths: &Paths, port: u16) -> ProcessSpec {
+    let path = |p: PathBuf| p.to_string_lossy().into_owned();
+    let mut args: Vec<String> = ["main.py", "--listen", "127.0.0.1", "--port", &port.to_string()].map(String::from).to_vec();
+    args.extend(["--base-directory".into(), path(paths.comfyui_data())]);
+    args.extend(["--models-directory".into(), path(paths.models())]);
+    args.push("--disable-auto-launch".into());
+    ProcessSpec {
+        name: COMFYUI.into(),
+        program: paths.venv_python(),
+        args,
+        cwd: Some(comfyui_code(paths)),
+        env: [("PYTHONUNBUFFERED", "1"), ("PYTORCH_ENABLE_MPS_FALLBACK", "1")]
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .to_vec(),
+        health_url: Some(format!("http://127.0.0.1:{port}/system_stats")),
+        log_file: paths.logs().join("comfyui.log"),
+    }
+}
+
+/// The host finds ComfyUI by URL, and its temp folder (for cleanup) under the base directory.
+fn point_host_at_comfyui(host: &mut ProcessSpec, paths: &Paths, comfy_port: u16) {
+    host.env.push(("COMFYUI_URL".into(), format!("http://127.0.0.1:{comfy_port}")));
+    host.env.push(("COMFYUI_DIR".into(), paths.comfyui_data().to_string_lossy().into_owned()));
 }
 
 /// The release archive name and its sha256 for this OS and CPU.
@@ -164,24 +312,30 @@ fn ensure_uv(paths: &Paths) -> Result<(), String> {
     let (name, sha) = uv_archive(std::env::consts::OS, std::env::consts::ARCH)
         .ok_or("There's no uv build for this system.")?;
     let url = format!("https://github.com/astral-sh/uv/releases/download/{UV_VERSION}/{name}");
-    let tmp = paths.runtime().join("download");
-    let _ = fs::remove_dir_all(&tmp);
-    fs::create_dir_all(&tmp).map_err(|e| e.to_string())?;
-    let archive = tmp.join(&name);
-
-    // shortcut: system curl and tar (in Windows 10+, macOS and desktop Linux) instead of an HTTP
-    // and archive crate; switch when download.rs brings an HTTP client with progress and resume.
-    run(Command::new(system_tool("curl")).args(["-fsSL", "--retry", "3", "-o"]).arg(&archive).arg(&url))?;
-    let got = sha256_file(&archive).map_err(|e| e.to_string())?;
-    if got != sha {
-        return Err(format!("The uv download is corrupt (sha256 {got}, expected {sha}). Try again."));
-    }
-    run(Command::new(system_tool("tar")).arg("-xf").arg(&archive).arg("-C").arg(&tmp))?;
+    let tmp = fetch_and_unpack(paths, &url, sha, "uv")?;
     let found = find_file(&tmp, &exe("uv")).ok_or("The uv archive has no uv binary.")?;
     fs::create_dir_all(uv.parent().unwrap()).map_err(|e| e.to_string())?;
     fs::rename(&found, &uv).map_err(|e| e.to_string())?;
     let _ = fs::remove_dir_all(&tmp);
     Ok(())
+}
+
+/// Downloads `url` into a fresh runtime/download folder, checks its sha256 and unpacks it there.
+/// Returns that folder; the caller moves out what it needs and deletes it.
+fn fetch_and_unpack(paths: &Paths, url: &str, sha: &str, what: &str) -> Result<PathBuf, String> {
+    let tmp = paths.runtime().join("download");
+    let _ = fs::remove_dir_all(&tmp);
+    fs::create_dir_all(&tmp).map_err(|e| e.to_string())?;
+    let archive = tmp.join(url.rsplit('/').next().unwrap_or("archive"));
+    // shortcut: system curl and tar (in Windows 10+, macOS and desktop Linux) instead of an HTTP
+    // and archive crate; switch when download.rs brings an HTTP client with progress and resume.
+    run(Command::new(system_tool("curl")).args(["-fsSL", "--retry", "3", "-o"]).arg(&archive).arg(url))?;
+    let got = sha256_file(&archive).map_err(|e| e.to_string())?;
+    if got != sha {
+        return Err(format!("The {what} download is corrupt (sha256 {got}, expected {sha}). Try again."));
+    }
+    run(Command::new(system_tool("tar")).arg("-xf").arg(&archive).arg("-C").arg(&tmp))?;
+    Ok(tmp)
 }
 
 /// uv with everything it writes (Pythons, cache) kept inside our runtime folder, and the user's
@@ -285,7 +439,8 @@ pub fn host_spec(paths: &Paths, resources: &Path, port: u16, api_key: &str) -> P
     ProcessSpec {
         name: HOST.into(),
         program: paths.venv_python(),
-        args: ["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", &port.to_string()]
+        // No access log: the supervisor's health check alone would add a line every second.
+        args: ["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", &port.to_string(), "--no-access-log"]
             .map(String::from)
             .to_vec(),
         cwd: Some(resources.join("host")),
@@ -299,13 +454,14 @@ pub fn host_spec(paths: &Paths, resources: &Path, port: u16, api_key: &str) -> P
 // watch the exit code here and fail on the first crash if that wait annoys people.
 fn wait_running(supervisor: &Supervisor, name: &str, timeout: Duration) -> Result<(), String> {
     let started = Instant::now();
+    let label = if name == HOST { "The host" } else { "ComfyUI" };
     loop {
         match supervisor.status(name) {
             ProcessStatus::Running => return Ok(()),
             ProcessStatus::Crashed { .. } | ProcessStatus::Stopped => {
-                return Err("The host stopped while starting.".into());
+                return Err(format!("{label} stopped while starting."));
             }
-            _ if started.elapsed() > timeout => return Err("The host didn't start in time.".into()),
+            _ if started.elapsed() > timeout => return Err(format!("{label} didn't start in time.")),
             _ => thread::sleep(Duration::from_millis(250)),
         }
     }
@@ -383,6 +539,36 @@ mod tests {
         assert!(spec.args.contains(&"4321".to_string()));
     }
 
+    #[test]
+    fn torch_index_per_backend() {
+        assert_eq!(torch_index("macos", Backend::Mps, None), None);
+        assert_eq!(torch_index("macos", Backend::Cpu, None), None);
+        assert_eq!(torch_index("linux", Backend::Cpu, None), Some("https://download.pytorch.org/whl/cpu"));
+        let cuda = |d| torch_index("windows", Backend::Cuda, d).unwrap().rsplit('/').next().unwrap();
+        assert_eq!(cuda(Some("581.57")), "cu130");
+        assert_eq!(cuda(Some("580.95.05")), "cu130");
+        assert_eq!(cuda(Some("566.36")), "cu126");
+        assert_eq!(cuda(None), "cu126");
+        assert_eq!(cuda(Some("garbage")), "cu126");
+        assert!(torch_index("linux", Backend::Rocm, None).unwrap().ends_with("rocm7.2"));
+        assert!(torch_index("windows", Backend::Xpu, None).unwrap().ends_with("xpu"));
+    }
+
+    #[test]
+    fn comfyui_spec_uses_app_data_and_localhost() {
+        let paths = Paths { root: PathBuf::from("/data") };
+        let spec = comfyui_spec(&paths, 5555);
+        let arg = |flag: &str| spec.args.iter().position(|a| a == flag).map(|i| spec.args[i + 1].clone());
+        assert_eq!(spec.args[0], "main.py");
+        assert_eq!(arg("--listen").as_deref(), Some("127.0.0.1"));
+        assert_eq!(arg("--port").as_deref(), Some("5555"));
+        assert_eq!(arg("--base-directory").map(PathBuf::from), Some(paths.comfyui_data()));
+        assert_eq!(arg("--models-directory").map(PathBuf::from), Some(paths.models()));
+        assert_eq!(spec.cwd, Some(comfyui_code(&paths)));
+        assert_eq!(spec.health_url.as_deref(), Some("http://127.0.0.1:5555/system_stats"));
+        assert!(!engine_installed(&paths));
+    }
+
     /// The real thing, against the network: installs into the temp dir (kept, so a re-run is fast)
     /// and starts the host from this repo.
     /// `cargo test real_install_and_host -- --ignored --nocapture`
@@ -402,5 +588,37 @@ mod tests {
         println!("host on :{port} -> {result:?}\n{}", log_tail(&paths.logs().join("host.log"), 15));
         supervisor.stop_all();
         result.unwrap();
+    }
+
+    /// Engine install on this machine (~2 GB on a Mac, more on CUDA/ROCm), then ComfyUI and the host
+    /// together; passes when the host reports ComfyUI connected.
+    /// `cargo test real_engine -- --ignored --nocapture` (after real_install_and_host)
+    #[test]
+    #[ignore]
+    fn real_engine() {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..").canonicalize().unwrap();
+        let paths = Paths { root: std::env::temp_dir().join("glint-runtime-real") };
+        let started = Instant::now();
+        let report = |p| println!("{:>6.1}s {p:?}", started.elapsed().as_secs_f64());
+        setup_engine(&paths, torch_index_for(&scan::scan()), report).unwrap();
+        assert!(engine_installed(&paths));
+
+        fs::create_dir_all(paths.models()).unwrap();
+        fs::create_dir_all(paths.comfyui_data().join("custom_nodes")).unwrap();
+        let supervisor = Supervisor::new();
+        let comfy_port = free_port().unwrap();
+        let mut host = host_spec(&paths, &repo, free_port().unwrap(), "test-key");
+        let health = host.health_url.clone().unwrap().replace("/livez", "/health");
+        point_host_at_comfyui(&mut host, &paths, comfy_port);
+        supervisor.start(comfyui_spec(&paths, comfy_port)).unwrap();
+        supervisor.start(host).unwrap();
+        let result = wait_running(&supervisor, COMFYUI, COMFYUI_START_TIMEOUT)
+            .and_then(|_| wait_running(&supervisor, HOST, HOST_START_TIMEOUT));
+        let body = Command::new("curl").arg("-s").arg(&health).output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
+        let log = log_tail(&paths.logs().join("comfyui.log"), 15);
+        println!("{:>6.1}s {result:?}\n/health -> {body:?}\n{log}", started.elapsed().as_secs_f64());
+        supervisor.stop_all();
+        result.unwrap();
+        assert!(body.unwrap().contains("\"comfyui_connected\":true"));
     }
 }

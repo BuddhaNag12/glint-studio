@@ -13,6 +13,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             scan::scan_hardware,
             runtime::install_core,
+            runtime::install_engine,
             runtime::start_host
         ])
         .build(tauri::generate_context!())

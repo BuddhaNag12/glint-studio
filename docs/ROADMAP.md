@@ -291,7 +291,7 @@ Each phase ends with a working milestone, and each can ship on its own.
 **Phase 2 – Desktop shell and lightweight runtime (about 2 weeks)**
 - Tauri app, `scan.rs`, `runtime.rs` (both tiers), `supervisor.rs` (lazy start, idle stop), `secrets.rs`, and the Onboarding page: scan → choose local or cloud → install → ready.
 - Installer size check in CI.
-- Done so far: `scan.rs`, `supervisor.rs`, `runtime.rs` core tier (uv, Python, venv, host deps), the host started on a free port with a per-launch key, and the Onboarding scan → choose → install → ready flow.
+- Done so far: `scan.rs`, `supervisor.rs`, `runtime.rs` core tier (uv, Python, venv, host deps) and engine tier (PyTorch per backend, ComfyUI v0.45.0, started before the host and wired to it), the host started on a free port with a per-launch key, and the Onboarding scan → choose → install → ready flow.
 - Milestones:
   - On a clean machine, a cloud-only setup (core tier, no PyTorch) generates with a provider key, and the install stays near 100 MB.
   - On a clean Windows + NVIDIA machine and a clean Apple Silicon Mac, the local engine installs and ComfyUI and the host run without opening a terminal.

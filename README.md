@@ -86,10 +86,12 @@ npm run tauri dev
 ```
 
 On first run the app installs its own runtime into the OS app-data folder (`dev.glintstudio.app`):
-uv, Python 3.12, a venv, and the host's dependencies (about 50 MB, no admin rights). It then starts
-the host on a free localhost port with a new API key each launch; logs go to `logs/host.log` there.
-Rust tests: `cargo test` in `apps/desktop/src-tauri`; the real install and host start against the
-network is `cargo test real_install_and_host -- --ignored --nocapture`.
+uv, Python 3.12, a venv, and the host's dependencies (about 50 MB, no admin rights). Choosing the
+local engine also installs PyTorch for your GPU and ComfyUI v0.45.0 (about 2 GB of disk on an Apple
+Silicon Mac; more with NVIDIA or AMD, whose PyTorch builds are larger). It then starts ComfyUI (if installed) and the host on free localhost ports,
+with a new API key each launch; logs go to `logs/host.log` and `logs/comfyui.log` there.
+Rust tests: `cargo test` in `apps/desktop/src-tauri`; the real installs against the network are
+`cargo test real_install_and_host -- --ignored --nocapture`, then `cargo test real_engine -- --ignored --nocapture`.
 
 ## License
 

@@ -10,7 +10,7 @@ pub struct Paths {
 }
 
 impl Paths {
-    /// uv, Python, the venv and (later) ComfyUI. "Repair runtime" can wipe this alone.
+    /// uv, Python, the venv and ComfyUI's code. "Repair runtime" can wipe this alone.
     pub fn runtime(&self) -> PathBuf {
         self.root.join("runtime")
     }
@@ -26,6 +26,15 @@ impl Paths {
         } else {
             self.venv().join("bin").join("python")
         }
+    }
+    /// ComfyUI's base directory (custom_nodes, input, output, temp, user); outside runtime so a
+    /// repair keeps it.
+    pub fn comfyui_data(&self) -> PathBuf {
+        self.root.join("comfyui")
+    }
+    /// Model files, shared by every engine version.
+    pub fn models(&self) -> PathBuf {
+        self.root.join("models")
     }
     pub fn outputs(&self) -> PathBuf {
         self.root.join("outputs")
