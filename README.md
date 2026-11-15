@@ -61,6 +61,10 @@ uv run --no-sync pytest -q
 Run it against an existing ComfyUI: copy `host/.env.example` to `host/.env`, set `API_KEY`,
 then `uv run --no-sync uvicorn app.main:app --port 8000`.
 
+With the host running, check it end to end (health, images, jobs and events, cancel, legacy generate,
+auth; one PASS/FAIL line each, exit 1 on any failure): from `host/`, run
+`uv run --no-sync python -m tools.smoke --api-key "$API_KEY"` (add `--model <id>` to try other models).
+
 To add a remote image API, copy `host/providers.example.json` to `host/providers.json`, set
 `PROVIDERS_FILE=providers.json` and the key it names (e.g. `OPENAI_API_KEY`) in `host/.env`. Then:
 

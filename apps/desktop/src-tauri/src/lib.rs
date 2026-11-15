@@ -1,3 +1,7 @@
+mod scan;
+#[allow(dead_code)] // started by the runtime installer (Phase 2)
+mod supervisor;
+
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -8,7 +12,7 @@ fn greet(name: &str) -> String {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![greet])
+        .invoke_handler(tauri::generate_handler![greet, scan::scan_hardware])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
