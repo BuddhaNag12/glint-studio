@@ -5,7 +5,7 @@ import type { Engine } from "./Onboarding";
 // Mirrors Progress and HostInfo in src-tauri/src/runtime.rs; "start" is the start_host call.
 type StepId = "uv" | "python" | "venv" | "host" | "start";
 type Progress = { step: Exclude<StepId, "start">; done: boolean };
-type HostInfo = { url: string; api_key: string };
+export type HostInfo = { url: string; api_key: string };
 type StepState = "pending" | "running" | "done" | "failed";
 
 const STEPS: [StepId, string][] = [
@@ -18,7 +18,7 @@ const STEPS: [StepId, string][] = [
 const MARK: Record<StepState, string> = { pending: "○", running: "◐", done: "✓", failed: "✕" };
 const allPending = () => Object.fromEntries(STEPS.map(([id]) => [id, "pending"])) as Record<StepId, StepState>;
 
-export default function Setup({ engine, onBack }: { engine: Engine; onBack: () => void }) {
+export default function Setup({ engine, onBack, onReady }: { engine: Engine; onBack: () => void; onReady: (host: HostInfo) => void }) {
   const [states, setStates] = useState(allPending);
   const [error, setError] = useState<string | null>(null);
   const [ready, setReady] = useState<{ host: HostInfo; models: number } | null>(null);
@@ -87,12 +87,14 @@ export default function Setup({ engine, onBack }: { engine: Engine; onBack: () =
             The host is running at {ready.host.url} with {ready.models} model{ready.models === 1 ? "" : "s"} in
             the catalog.
           </p>
-          {/* shortcut: the next build adds the engine install (local) or provider keys (cloud) here. */}
-          <p className="lead">
-            {engine === "local"
-              ? "Next: installing the image engine (PyTorch and ComfyUI) comes in the next build."
-              : "Next: adding your provider's API key comes in the next build."}
-          </p>
+          {/* shortcut: the next build adds the engine install (local) here. */}
+          {engine === "local" ? (
+            <p className="lead">Next: installing the image engine (PyTorch and ComfyUI) comes in the next build.</p>
+          ) : (
+            <button className="primary" onClick={() => onReady(ready.host)}>
+              Add your API key
+            </button>
+          )}
         </section>
       )}
 

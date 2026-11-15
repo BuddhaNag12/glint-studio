@@ -36,6 +36,10 @@ impl Paths {
     pub fn workflows(&self) -> PathBuf {
         self.root.join("workflows")
     }
+    /// Remote image APIs the host offers (keys are in the OS keychain, not here).
+    pub fn providers_file(&self) -> PathBuf {
+        self.root.join("providers.json")
+    }
     pub fn logs(&self) -> PathBuf {
         self.root.join("logs")
     }

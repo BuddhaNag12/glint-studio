@@ -115,6 +115,20 @@ class OpenAICompatProvider:
         # No probe: listing or generating would spend the user's quota.
         return None
 
+    async def check(self) -> None:
+        """Tests the key with a call that costs nothing: listing the provider's models."""
+        name = self.config.name or self.id
+        if self.config.api_key_env and not self._key:
+            raise ApiError("provider_auth", f"No key is set for {name}.")
+        headers = {"Authorization": f"Bearer {self._key}"} if self._key else {}
+        try:
+            res = await self.http.get(f"{self.config.base_url.rstrip('/')}/models", headers=headers)
+        except httpx.TimeoutException as exc:
+            raise ApiError("timeout", f"{name} took too long.") from exc
+        except httpx.HTTPError as exc:
+            raise ApiError("provider_down", f"Can't reach {name}: {exc}") from exc
+        _raise_for_status(res, name)
+
     async def generate(self, request: ProviderRequest, on_progress: ProgressFn | None = None) -> ProviderResult:
         # These APIs report no progress; cancelling the task drops the HTTP request.
         model, p = request.model, request.params

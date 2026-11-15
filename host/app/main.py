@@ -252,6 +252,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         styles: dict[str, Style] = request.app.state.styles
         return {"styles": [s.model_dump(mode="json") for s in styles.values()]}
 
+    @app.post("/api/v1/providers/{provider_id}/check", dependencies=[Depends(require_api_key)])
+    async def check_provider(provider_id: str, request: Request) -> dict:
+        """Tests a remote provider's key; the desktop app's "Test key" button."""
+        provider = request.app.state.providers.get(provider_id)
+        if provider is None or provider_id == "comfyui":
+            raise ApiError("not_found", f"No '{provider_id}' provider is set up.")
+        await provider.check()
+        return {"ok": True}
+
     def _submit(request: Request, job: ProviderRequest, user_prompt: str, response_format: str) -> Job:
         provider = request.app.state.providers.get(job.model.provider)
         if provider is None:

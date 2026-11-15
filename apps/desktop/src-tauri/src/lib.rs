@@ -1,6 +1,7 @@
 mod paths;
 mod runtime;
 mod scan;
+mod secrets;
 mod supervisor;
 
 use tauri::Manager;
@@ -13,7 +14,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             scan::scan_hardware,
             runtime::install_core,
-            runtime::start_host
+            runtime::start_host,
+            secrets::list_providers,
+            secrets::set_provider_key,
+            secrets::delete_provider_key
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

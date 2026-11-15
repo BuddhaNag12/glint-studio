@@ -98,7 +98,8 @@ pub async fn start_host(app: AppHandle, state: State<'_, Runtime>) -> Result<Hos
     }
     let port = free_port().map_err(|e| e.to_string())?;
     let info = HostInfo { url: format!("http://127.0.0.1:{port}"), api_key: new_key()? };
-    let spec = host_spec(&paths, &resource_dir(&app)?, port, &info.api_key);
+    let mut spec = host_spec(&paths, &resource_dir(&app)?, port, &info.api_key);
+    spec.env.extend(crate::secrets::host_env(&paths, &resource_dir(&app)?, &spec.env));
     let log = spec.log_file.clone();
     supervisor.start(spec).map_err(|e| format!("Couldn't start the host: {e}"))?;
     tauri::async_runtime::spawn_blocking(move || wait_running(&supervisor, HOST, HOST_START_TIMEOUT))
