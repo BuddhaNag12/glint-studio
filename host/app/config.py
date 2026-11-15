@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     public_base_url: str = "http://127.0.0.1:8000"
     request_timeout_seconds: float = Field(default=120.0, gt=0)
     max_concurrent_jobs: int = Field(default=1, ge=1)
+    queue_timeout_seconds: float = Field(default=600.0, gt=0)  # longest wait for a free slot
     output_dir: Path = Path("generated_images")
     workflows_dir: Path = Path("workflows")  # the user's own ComfyUI workflows
     catalog_dir: Path = Path(__file__).resolve().parents[2] / "catalog"

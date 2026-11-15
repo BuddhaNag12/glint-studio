@@ -69,6 +69,10 @@ curl http://127.0.0.1:8000/v1/images/generations -H "Authorization: Bearer $API_
   -H "Content-Type: application/json" -d '{"prompt": "a lighthouse at dusk", "style": "cartoon"}'
 ```
 
+The same body on `POST /api/v1/jobs` queues the job and answers at once with its `id`. Follow it with
+`GET /api/v1/jobs/{id}` or the `WS /api/v1/events` stream (key in the header or `?api_key=`), and
+cancel it with `DELETE /api/v1/jobs/{id}`.
+
 Desktop (needs Node 22+ and [Rust + the Tauri prerequisites](https://tauri.app/start/prerequisites/)):
 
 ```bash

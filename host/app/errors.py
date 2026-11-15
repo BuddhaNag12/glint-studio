@@ -19,6 +19,7 @@ ErrorCode = Literal[
     "provider_quota",
     "provider_rejected",
     "provider_down",
+    "not_found",
 ]
 
 ERROR_STATUS: dict[str, int] = {
@@ -33,6 +34,7 @@ ERROR_STATUS: dict[str, int] = {
     "provider_quota": 429,
     "provider_rejected": 422,
     "provider_down": 503,
+    "not_found": 404,
 }
 
 

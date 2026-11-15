@@ -179,7 +179,7 @@ Targets, checked in CI where they can be:
 - "Remove local engine" deletes PyTorch, ComfyUI and (optionally) models to get the space back.
 
 ### Providers: external APIs with your own key (`host/app/providers/`)
-- **One interface.** Each provider implements `capabilities()`, `list_models()`, `generate(request, on_progress)` and `cancel(job)`. Styles, clamping, jobs, naming, outputs and the API sit above it, so every provider gets them for free.
+- **One interface.** Each provider implements `capabilities()`, `list_models()`, `generate(request, on_progress)`; cancelling the generate task is the cancel call. Styles, clamping, jobs, naming, outputs and the API sit above it, so every provider gets them for free.
 - **Ships in this order:**
   1. `comfyui` local (the managed engine) and remote (any ComfyUI URL with an optional auth header, for example your own GPU PC).
   2. `openai_compat`: any OpenAI-compatible images endpoint, with a base URL and key. Covers OpenAI and the many hosts and self-hosted servers that copy that API, including another Glint Studio.
@@ -281,7 +281,7 @@ Each phase ends with a working milestone, and each can ship on its own.
 - Port the bridge into `host/` with all 23 tests green.
 - Set up CI: pytest, Rust tests, UI build, a 3-OS build.
 
-**Phase 1 – Host core and provider interface, headless (about 1–2 weeks)**
+**Phase 1 – Host core and provider interface, headless (about 1–2 weeks)** code done 2026-11-16; milestone not yet run against a real ComfyUI
 - Catalog schema and loader, `styles.py`, `jobs.py`, `errors.py`, clamping.
 - `providers/base.py`, with `comfyui` (local and remote) and `openai_compat` as the first two providers. Provider keys come from the environment in this phase.
 - The OpenAI and native endpoints.

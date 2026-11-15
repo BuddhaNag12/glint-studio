@@ -148,6 +148,6 @@ def test_api_error_renders_code_and_message() -> None:
     res = TestClient(app).get("/boom")
     assert res.status_code == 429
     assert res.json() == {"error": {"code": "provider_quota", "message": "Out of credits."}}
-    assert len(ERROR_STATUS) == 11
+    assert len(ERROR_STATUS) == 12
     with pytest.raises(ValueError):
         ApiError("nope", "x")  # type: ignore[arg-type]

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import time
+from collections.abc import Mapping
 
 from fastapi import Header, HTTPException, Request, status
 
@@ -20,6 +21,16 @@ def extract_api_token(authorization: str | None, x_api_key: str | None) -> str |
     if x_api_key and x_api_key.strip():
         return x_api_key.strip()
     return None
+
+
+def is_valid_api_key(settings, headers: Mapping[str, str], query_key: str | None = None) -> bool:
+    """For WebSockets, where browsers can't set headers: the headers, or an ?api_key= query."""
+    token = extract_api_token(headers.get("authorization"), headers.get("x-api-key")) or query_key
+    return bool(
+        settings.is_api_key_configured
+        and token
+        and hmac.compare_digest(token.encode("utf-8"), settings.api_key.strip().encode("utf-8"))
+    )
 
 
 def verify_api_key(

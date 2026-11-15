@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import os
@@ -62,6 +63,9 @@ class FakeComfyClient:
         self.generate_error: Exception | None = None
         self.last_workflow: dict[str, Any] | None = None
         self.last_output_node_id: str | None = None
+        self.gate: asyncio.Event | None = None  # when set, runs block until it is released
+        self.started: list[str] = []  # positive prompts, in the order runs began
+        self.interrupted = 0
 
     async def check_health(self, timeout_seconds: float = 5.0) -> None:
         if self.health_error:
@@ -72,9 +76,20 @@ class FakeComfyClient:
         workflow: dict[str, Any],
         output_node_id: str | None = None,
         timeout_seconds: float = 120.0,
+        on_progress: Any = None,
     ) -> tuple[str, list[ComfyImageOutput]]:
         if self.generate_error:
             raise self.generate_error
+        self.started.append(next((n["inputs"]["text"] for n in workflow.values()
+                                  if n.get("class_type") == "CLIPTextEncode"), ""))
+        if on_progress:
+            on_progress(0.5)
+        if self.gate is not None:
+            try:
+                await self.gate.wait()
+            except asyncio.CancelledError:
+                self.interrupted += 1
+                raise
         self.last_workflow = workflow
         self.last_output_node_id = output_node_id
         return (

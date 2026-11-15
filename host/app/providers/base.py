@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from app.catalog import CatalogModel, ResolvedParams
-from app.comfy_client import ComfyImageOutput
+from app.comfy_client import ComfyImageOutput, ProgressFn
 from app.styles import ComposedPrompt
 
 
@@ -26,10 +26,11 @@ class ProviderResult:
 
 
 class Provider(Protocol):
-    """Failures are raised as ApiError with one of the codes in app.errors."""
+    """Failures are raised as ApiError with one of the codes in app.errors. Cancelling the
+    generate() task cancels the run; a provider that can, stops the work on its side too."""
 
     id: str
 
     async def health(self) -> None: ...
 
-    async def generate(self, request: ProviderRequest) -> ProviderResult: ...
+    async def generate(self, request: ProviderRequest, on_progress: ProgressFn | None = None) -> ProviderResult: ...

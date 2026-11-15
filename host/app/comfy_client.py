@@ -9,13 +9,16 @@ import uuid
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 import websockets
 from websockets.exceptions import WebSocketException
 
 logger = logging.getLogger(__name__)
+
+# Called with 0..1 as the sampler steps through.
+ProgressFn = Callable[[float], None]
 
 
 class ComfyConnectionError(RuntimeError):
@@ -158,11 +161,13 @@ class ComfyClient:
         workflow: dict[str, Any],
         output_node_id: str | None = None,
         timeout_seconds: float = 120.0,
+        on_progress: ProgressFn | None = None,
     ) -> tuple[str, list[ComfyImageOutput]]:
-        """Submit a workflow, wait via WebSocket for completion, and download output images."""
+        """Submit a workflow, wait via WebSocket for completion, and download output images.
+        If the caller is cancelled (or times out), the prompt is stopped in ComfyUI too."""
         try:
             return await asyncio.wait_for(
-                self._run_generation(workflow, output_node_id),
+                self._run_generation(workflow, output_node_id, on_progress),
                 timeout=timeout_seconds,
             )
         except asyncio.TimeoutError as exc:
@@ -174,14 +179,20 @@ class ComfyClient:
         self,
         workflow: dict[str, Any],
         output_node_id: str | None,
+        on_progress: ProgressFn | None = None,
     ) -> tuple[str, list[ComfyImageOutput]]:
         client_id = uuid.uuid4().hex
         ws_endpoint = f"{self.ws_url}/ws?clientId={client_id}"
+        prompt_id: str | None = None
 
         try:
             async with websockets.connect(ws_endpoint, max_size=None) as ws:
                 prompt_id = await self._queue_prompt(workflow, client_id)
-                ws_images = await self._wait_for_completion(ws, prompt_id, output_node_id)
+                ws_images = await self._wait_for_completion(ws, prompt_id, output_node_id, on_progress)
+        except asyncio.CancelledError:
+            if prompt_id is not None:
+                await self.interrupt(prompt_id)
+            raise
         except (ComfyExecutionError, ComfyConnectionError):
             raise
         except (WebSocketException, OSError) as exc:
@@ -233,6 +244,7 @@ class ComfyClient:
         ws: Any,
         prompt_id: str,
         output_node_id: str | None = None,
+        on_progress: ProgressFn | None = None,
     ) -> list[ComfyImageOutput]:
         current_node: str | None = None
         ws_images: list[ComfyImageOutput] = []
@@ -270,6 +282,11 @@ class ComfyClient:
             if not isinstance(data, dict) or data.get("prompt_id") != prompt_id:
                 continue
 
+            if msg_type == "progress" and on_progress is not None:
+                value, maximum = data.get("value"), data.get("max")
+                if isinstance(value, (int, float)) and isinstance(maximum, (int, float)) and maximum > 0:
+                    on_progress(min(1.0, value / maximum))
+                continue
             if msg_type == "execution_error":
                 node_id = data.get("node_id", "unknown")
                 node_type = data.get("node_type", "unknown")
@@ -286,6 +303,15 @@ class ComfyClient:
                 if node is None:
                     return ws_images
                 current_node = str(node)
+
+    async def interrupt(self, prompt_id: str) -> None:
+        """Stop a prompt: drop it from ComfyUI's queue if it hasn't started, interrupt it if it has.
+        Best effort; ComfyUI versions that ignore prompt_id interrupt whatever is running."""
+        for path, body in (("/queue", {"delete": [prompt_id]}), ("/interrupt", {"prompt_id": prompt_id})):
+            try:
+                await self.http_client.post(f"{self.http_url}{path}", json=body, timeout=2.0)
+            except (httpx.HTTPError, OSError) as exc:
+                logger.debug("Could not stop ComfyUI prompt %s via %s: %s", prompt_id, path, exc)
 
     async def _fetch_history_entry(self, prompt_id: str) -> dict[str, Any]:
         for attempt in range(5):

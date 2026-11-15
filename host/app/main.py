@@ -2,24 +2,24 @@
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import logging
 import re
 import time
-import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 import httpx
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, WebSocket, status
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
+from starlette.websockets import WebSocketDisconnect
 
 from app.auth import (
     build_signed_image_query,
+    is_valid_api_key,
     require_api_key,
     verify_api_key,
     verify_image_signature,
@@ -28,8 +28,9 @@ from app.catalog import CatalogModel, load_catalog, resolve_params
 from app.comfy_client import ComfyClient, ComfyImageOutput, infer_mime_and_ext
 from app.config import Settings
 from app.errors import ApiError, api_error_handler
+from app.jobs import Job, JobQueue
 from app.naming import extract_image_title, safe_header_value, title_to_filename_slug
-from app.providers.base import Provider, ProviderRequest, ProviderResult
+from app.providers.base import ProviderRequest
 from app.providers.comfyui import ComfyUIProvider
 from app.providers.openai_compat import load_remote_providers
 from app.schemas import (
@@ -53,6 +54,7 @@ DEFAULT_STYLE = "lockscreen-wallpaper"
 # /api/v1/generate keeps the original bridge's status codes and {detail} body so existing clients
 # don't break; newer endpoints answer with {error:{code,message}} and app.errors' statuses.
 LEGACY_STATUS = {"workflow_failed": 502, "model_missing": 502}
+LEGACY_PATH = "/api/v1/generate"
 
 
 def _prune_expired_output_files(output_dir: Path, ttl_seconds: int) -> None:
@@ -162,10 +164,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 ),
                 **remote_providers,
             }
-            app.state.generation_semaphore = asyncio.Semaphore(
-                resolved_settings.max_concurrent_jobs
+            app.state.jobs = JobQueue(
+                max_concurrent=resolved_settings.max_concurrent_jobs,
+                queue_timeout_seconds=resolved_settings.queue_timeout_seconds,
+                run_timeout_seconds=resolved_settings.request_timeout_seconds,
+                keep_seconds=resolved_settings.image_url_ttl_seconds,  # finished jobs live as long as their URLs
             )
-            yield
+            try:
+                yield
+            finally:
+                await app.state.jobs.shutdown()
 
     app = FastAPI(
         title="Glint Studio Host",
@@ -175,10 +183,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_exception_handler(ApiError, api_error_handler)
 
     async def validation_error_handler(request: Request, exc: Exception) -> Response:
-        # The OpenAI-style endpoints answer with {error:{code,message}}; the rest keep FastAPI's
-        # {detail:[...]} so existing clients of /api/v1/generate don't break.
+        # Everything answers with {error:{code,message}} except /api/v1/generate, which keeps
+        # FastAPI's {detail:[...]} so existing clients don't break.
         assert isinstance(exc, RequestValidationError)
-        if not request.url.path.startswith("/v1/"):
+        if request.url.path == LEGACY_PATH:
             return await request_validation_exception_handler(request, exc)
         first = exc.errors()[0] if exc.errors() else {}
         where = ".".join(str(p) for p in first.get("loc", ()) if p != "body")
@@ -191,7 +199,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         CORSMiddleware,
         allow_origins=resolved_settings.cors_origins,
         allow_credentials=False,
-        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type", "X-API-Key"],
         expose_headers=[
             "Content-Disposition",
@@ -239,34 +247,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         styles: dict[str, Style] = request.app.state.styles
         return {"styles": [s.model_dump(mode="json") for s in styles.values()]}
 
-    async def _run(request: Request, job: ProviderRequest) -> ProviderResult:
-        provider: Provider | None = request.app.state.providers.get(job.model.provider)
+    def _submit(request: Request, job: ProviderRequest, user_prompt: str, response_format: str) -> Job:
+        provider = request.app.state.providers.get(job.model.provider)
         if provider is None:
             raise ApiError("provider_down", f"No '{job.model.provider}' provider is set up.")
-        if job.model.provider != "comfyui":
-            return await provider.generate(job)  # remote APIs don't share the local GPU
-        async with request.app.state.generation_semaphore:
-            return await provider.generate(job)
-
-    async def _generate_default(request: Request, body: GenerateRequest) -> ProviderResult:
-        """The legacy default: the default catalog model through the default style."""
-        model: CatalogModel = request.app.state.models[DEFAULT_MODEL]
-        style: Style | None = request.app.state.styles.get(DEFAULT_STYLE)
-        params = resolve_params(
-            model, style=style, width=body.width, height=body.height, steps=body.steps, cfg=body.cfg
+        return request.app.state.jobs.submit(
+            lambda on_progress: provider.generate(job, on_progress),
+            model=job.model.id,
+            prompt=user_prompt,
+            response_format=response_format,
+            local=job.model.provider == "comfyui",  # remote APIs don't share the local GPU
         )
-        prompt = compose(model, body.prompt, style=style, negative=body.negative_prompt)
-        return await _run(request, ProviderRequest(model, prompt, params, body.seed))
 
-    @app.post(
-        "/v1/images/generations",
-        response_model=ImagesResponse,
-        response_model_exclude_none=True,
-        dependencies=[Depends(require_api_key)],
-    )
-    async def images_generations(body: ImagesRequest, request: Request) -> ImagesResponse:
-        """OpenAI-compatible image generation over every catalog and provider model."""
-        cfg: Settings = request.app.state.settings
+    def _plan_images(request: Request, body: ImagesRequest) -> ProviderRequest:
+        """Check an images request against the catalog: the model, style and final params."""
         models: dict[str, CatalogModel] = request.app.state.models
         styles: dict[str, Style] = request.app.state.styles
 
@@ -291,18 +285,78 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             n=body.n,
         )
         prompt = compose(model, body.prompt, style=style, negative=body.negative_prompt)
-        result = await _run(request, ProviderRequest(model, prompt, params, body.seed))
+        return ProviderRequest(model, prompt, params, body.seed)
 
-        if body.response_format == "b64_json":
-            data = [ImageData(b64_json=base64.b64encode(img.content).decode("ascii")) for img in result.images]
-        else:
-            job_id = uuid.uuid4().hex
-            slug = title_to_filename_slug(extract_image_title(body.prompt))
-            data = [
-                ImageData(url=_build_generated_image(cfg, job_id, i, slug, img, "url").url)
-                for i, img in enumerate(result.images, start=1)
-            ]
-        return ImagesResponse(created=int(time.time()), data=data, model=model.id, seed=result.seed)
+    def _image_data(cfg: Settings, job: Job) -> list[ImageData]:
+        """The finished job's images as OpenAI-style data; url files are written once."""
+        if job.data is None and job.result is not None:
+            if job.response_format == "b64_json":
+                job.data = [
+                    ImageData(b64_json=base64.b64encode(img.content).decode("ascii")) for img in job.result.images
+                ]
+            else:
+                slug = title_to_filename_slug(extract_image_title(job.prompt))
+                job.data = [
+                    ImageData(url=_build_generated_image(cfg, job.id, i, slug, img, "url").url)
+                    for i, img in enumerate(job.result.images, start=1)
+                ]
+        return job.data or []
+
+    @app.post(
+        "/v1/images/generations",
+        response_model=ImagesResponse,
+        response_model_exclude_none=True,
+        dependencies=[Depends(require_api_key)],
+    )
+    async def images_generations(body: ImagesRequest, request: Request) -> ImagesResponse:
+        """OpenAI-compatible image generation over every catalog and provider model."""
+        jobs: JobQueue = request.app.state.jobs
+        job = _submit(request, _plan_images(request, body), body.prompt, body.response_format)
+        result = await jobs.wait(job)
+        data = _image_data(request.app.state.settings, job)
+        return ImagesResponse(created=int(time.time()), data=data, model=job.model, seed=result.seed)
+
+    @app.post("/api/v1/jobs", status_code=status.HTTP_202_ACCEPTED, dependencies=[Depends(require_api_key)])
+    async def create_job(body: ImagesRequest, request: Request) -> dict:
+        """Queue a generation and answer at once; follow it with GET /api/v1/jobs/{id} or the events."""
+        jobs: JobQueue = request.app.state.jobs
+        job = _submit(request, _plan_images(request, body), body.prompt, body.response_format)
+        return {"id": job.id, "status": job.status, "queue_position": jobs.queue_position(job)}
+
+    @app.get("/api/v1/jobs/{job_id}", dependencies=[Depends(require_api_key)])
+    async def get_job(job_id: str, request: Request) -> dict:
+        jobs: JobQueue = request.app.state.jobs
+        job = jobs.get(job_id)
+        view = jobs.view(job)
+        if job.status == "done":
+            view["seed"] = job.result.seed if job.result else None
+            view["data"] = [d.model_dump(exclude_none=True) for d in _image_data(request.app.state.settings, job)]
+        return view
+
+    @app.delete("/api/v1/jobs/{job_id}", dependencies=[Depends(require_api_key)])
+    async def cancel_job(job_id: str, request: Request) -> dict:
+        jobs: JobQueue = request.app.state.jobs
+        job = jobs.get(job_id)
+        jobs.cancel(job)
+        await job.done.wait()
+        return jobs.view(job)
+
+    @app.websocket("/api/v1/events")
+    async def job_events(ws: WebSocket) -> None:
+        """Every job's queued/started/progress/done/failed/cancelled events, as JSON messages."""
+        if not is_valid_api_key(ws.app.state.settings, ws.headers, ws.query_params.get("api_key")):
+            await ws.close(code=1008, reason="Missing or invalid API key.")
+            return
+        await ws.accept()
+        jobs: JobQueue = ws.app.state.jobs
+        listener = jobs.subscribe()
+        try:
+            while True:
+                await ws.send_json(await listener.get())
+        except WebSocketDisconnect:
+            pass
+        finally:
+            jobs.unsubscribe(listener)
 
     @app.post(
         "/api/v1/generate",
@@ -317,16 +371,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ) -> Response | GenerateResponse:
         cfg: Settings = request.app.state.settings
         comfy: ComfyUIProvider = request.app.state.providers["comfyui"]
+        jobs: JobQueue = request.app.state.jobs
 
-        start_time = time.perf_counter()
         try:
             if body.workflow == "default":
-                result = await _generate_default(request, body)
+                # The default catalog model through the default style.
+                model: CatalogModel = request.app.state.models[DEFAULT_MODEL]
+                style: Style | None = request.app.state.styles.get(DEFAULT_STYLE)
+                params = resolve_params(
+                    model, style=style, width=body.width, height=body.height, steps=body.steps, cfg=body.cfg
+                )
+                prompt = compose(model, body.prompt, style=style, negative=body.negative_prompt)
+                job = _submit(request, ProviderRequest(model, prompt, params, body.seed), body.prompt, "legacy")
             else:
                 # The user's own workflow from WORKFLOWS_DIR, run as-is with no catalog or style.
                 workflow_template, mapping = load_workflow_bundle(cfg.workflows_dir, body.workflow)
-                async with request.app.state.generation_semaphore:
-                    result = await comfy.run_workflow(workflow_template, mapping, body)
+                job = jobs.submit(
+                    lambda on_progress: comfy.run_workflow(workflow_template, mapping, body, on_progress),
+                    model=body.workflow,
+                    prompt=body.prompt,
+                    response_format="legacy",
+                    local=True,
+                )
+            result = await jobs.wait(job)
         except WorkflowNotFoundError as exc:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
         except WorkflowValidationError as exc:
@@ -341,8 +408,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ) from exc
         prompt_id, raw_images, used_seed = result.job_ref, result.images, result.seed
 
-        job_id = uuid.uuid4().hex
-        elapsed_ms = int((time.perf_counter() - start_time) * 1000)
+        job_id = job.id
+        elapsed_ms = job.elapsed_ms or 0
         image_title = extract_image_title(body.prompt)
         title_slug = title_to_filename_slug(image_title)
         header_title = safe_header_value(image_title)
