@@ -90,8 +90,11 @@ uv, Python 3.12, a venv, and the host's dependencies (about 50 MB, no admin righ
 local engine also installs PyTorch for your GPU and ComfyUI v0.45.0 (about 2 GB of disk on an Apple
 Silicon Mac; more with NVIDIA or AMD, whose PyTorch builds are larger). It then starts ComfyUI (if installed) and the host on free localhost ports,
 with a new API key each launch; logs go to `logs/host.log` and `logs/comfyui.log` there.
+With the local engine, the next page suggests models that fit your GPU and downloads them into
+`models/` there (resumable, each file checked against the catalog's sha256).
 Rust tests: `cargo test` in `apps/desktop/src-tauri`; the real installs against the network are
-`cargo test real_install_and_host -- --ignored --nocapture`, then `cargo test real_engine -- --ignored --nocapture`.
+`cargo test real_install_and_host -- --ignored --nocapture`, then `cargo test real_engine -- --ignored --nocapture`,
+then `cargo test real_first_image -- --ignored --nocapture` (downloads Z-Image Turbo, about 21 GB, and makes one image).
 
 ## License
 

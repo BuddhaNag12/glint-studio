@@ -51,6 +51,20 @@ class Limits(_Strict):
     supports_seed: bool = True
 
 
+class ModelFile(_Strict):
+    url: str = Field(pattern=r"^https://")
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    bytes: int = Field(gt=0)
+    # Relative to the models folder; the app writes here, so no "..", no absolute paths.
+    dest: str = Field(pattern=r"^(checkpoints|diffusion_models|text_encoders|vae|loras)/[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+class Variant(_Strict):
+    precision: str
+    min_vram_gb: float = Field(ge=0)
+    files: list[ModelFile] = Field(min_length=1)
+
+
 class CatalogModel(_Strict):
     id: str = Field(pattern=ID_PATTERN)
     name: str
@@ -63,6 +77,8 @@ class CatalogModel(_Strict):
     workflow: str | None = None
     negative: str = ""
     requires_hf_token: bool = False
+    # Best first; the app downloads the first that fits. Empty: nothing to download (cloud models).
+    variants: list[Variant] = Field(default_factory=list)
     defaults: Defaults
     quality: dict[Quality, Params] = Field(default_factory=dict)
     limits: Limits

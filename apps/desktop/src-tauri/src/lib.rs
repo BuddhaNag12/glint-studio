@@ -1,4 +1,6 @@
+mod download;
 mod paths;
+mod recommend;
 mod runtime;
 mod scan;
 mod secrets;
@@ -16,6 +18,8 @@ pub fn run() {
             runtime::install_core,
             runtime::install_engine,
             runtime::start_host,
+            recommend::recommend_models,
+            download::download_model,
             secrets::list_providers,
             secrets::set_provider_key,
             secrets::delete_provider_key
@@ -25,6 +29,7 @@ pub fn run() {
         .run(|app, event| {
             if let tauri::RunEvent::Exit = event {
                 app.state::<runtime::Runtime>().supervisor.stop_all();
+                download::stop();
             }
         });
 }

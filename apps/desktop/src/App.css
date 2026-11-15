@@ -74,3 +74,11 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .form input:focus-visible, .form select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .form p { margin: 0; min-height: 1.5em; }
+.models { display: grid; gap: 12px; }
+.model h2 { margin: 0; }
+.model .lead { margin: 4px 0 12px; }
+.model-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.fit { font-size: 0.85rem; padding: 2px 10px; border-radius: 999px; border: 1px solid var(--border); }
+.fit.great { color: var(--accent); border-color: var(--accent); }
+.fit.wont_fit { color: var(--error); border-color: var(--error); }
+.model progress { width: 100%; accent-color: var(--accent); }

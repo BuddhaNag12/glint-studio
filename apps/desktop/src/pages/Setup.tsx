@@ -50,13 +50,18 @@ export default function Setup({
       setStates(allPending());
       setError(null);
       try {
-        const onProgress = new Channel<Progress>();
-        onProgress.onmessage = (p) => {
-          current = p.step;
-          set(p.step, p.done ? "done" : "running");
+        // One channel per command: Tauri numbers each command's messages from 0 and closes the
+        // channel when the command returns, so a reused channel drops the second command's steps.
+        const track = () => {
+          const onProgress = new Channel<Progress>();
+          onProgress.onmessage = (p) => {
+            current = p.step;
+            set(p.step, p.done ? "done" : "running");
+          };
+          return onProgress;
         };
-        await invoke("install_core", { onProgress });
-        if (engine === "local") await invoke("install_engine", { onProgress });
+        await invoke("install_core", { onProgress: track() });
+        if (engine === "local") await invoke("install_engine", { onProgress: track() });
         current = "start";
         set("start", "running");
         const host = await invoke<HostInfo>("start_host");
@@ -118,14 +123,9 @@ export default function Setup({
             The host is running at {ready.host.url} with {ready.models} model{ready.models === 1 ? "" : "s"} in
             the catalog.
           </p>
-          {/* shortcut: the next build adds model downloads (local) here. */}
-          {engine === "local" ? (
-            <p className="lead">ComfyUI is running. Next: downloading a model comes in the next build.</p>
-          ) : (
-            <button className="primary" onClick={() => onReady(ready.host)}>
-              Add your API key
-            </button>
-          )}
+          <button className="primary" onClick={() => onReady(ready.host)}>
+            {engine === "local" ? "Choose a model" : "Add your API key"}
+          </button>
         </section>
       )}
 

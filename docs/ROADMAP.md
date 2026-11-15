@@ -291,7 +291,7 @@ Each phase ends with a working milestone, and each can ship on its own.
 **Phase 2 – Desktop shell and lightweight runtime (about 2 weeks)**
 - Tauri app, `scan.rs`, `runtime.rs` (both tiers), `supervisor.rs` (lazy start, idle stop), `secrets.rs`, and the Onboarding page: scan → choose local or cloud → install → ready.
 - Installer size check in CI.
-- Done so far: `scan.rs`, `supervisor.rs`, `runtime.rs` core tier (uv, Python, venv, host deps) and engine tier (PyTorch per backend, ComfyUI v0.45.0, started before the host and wired to it), the host started on a free port with a per-launch key, and the Onboarding scan → choose → install → ready flow.
+- Done so far: `scan.rs`, `supervisor.rs`, `runtime.rs` core tier (uv, Python, venv, host deps) and engine tier (PyTorch per backend, ComfyUI v0.45.0, started before the host and wired to it), the host started on a free port with a per-launch key, `secrets.rs` (provider keys in the OS keychain, passed to the host as env vars) with the Cloud provider page, and the Onboarding scan → choose → install → ready flow.
 - Milestones:
   - On a clean machine, a cloud-only setup (core tier, no PyTorch) generates with a provider key, and the install stays near 100 MB.
   - On a clean Windows + NVIDIA machine and a clean Apple Silicon Mac, the local engine installs and ComfyUI and the host run without opening a terminal.
@@ -299,6 +299,9 @@ Each phase ends with a working milestone, and each can ship on its own.
 **Phase 3 – Catalog, recommendations, downloads (about 1–2 weeks)**
 - `recommend.rs`, `download.rs` (resume, sha256, HF token in the keychain), the Discover page, and linking existing model folders.
 - Milestone: scan → "Recommended for you" → one click → model ready.
+- Done so far: model `variants` in the catalog (Z-Image Turbo bf16 from Comfy-Org/Z-Image-Turbo), `recommend.rs` (best variant that fits the GPU, else Runs slow from RAM, else Won't fit; disk checked), `download.rs` (curl with resume to `.part`, sha256, then rename; one at a time), and the Discover page after setup.
+- Next: finish the milestone check, the first real local image with `cargo test real_first_image -- --ignored --nocapture` (downloads Z-Image Turbo bf16, about 21 GB, resuming any `.part` left in the test runtime), then try Download in the real app window.
+- Still to do: smaller variants (fp8, GGUF), which need the host to put file names into the workflow; the HF token; linking existing model folders; a cancel button.
 
 **Phase 4 – Providers and customization (about 1–2 weeks)**
 - **Providers page:** add a provider, paste a key (keychain), "Test key", pick its models; add a remote ComfyUI or any OpenAI-compatible endpoint; add custom model IDs.

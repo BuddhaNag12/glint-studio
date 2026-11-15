@@ -354,7 +354,7 @@ fn uv(paths: &Paths) -> Command {
 }
 
 /// Windows has curl and tar in System32; a Git or MSYS copy earlier on PATH behaves differently.
-fn system_tool(name: &str) -> PathBuf {
+pub(crate) fn system_tool(name: &str) -> PathBuf {
     if cfg!(windows) {
         let root = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
         PathBuf::from(root).join("System32").join(exe(name))
@@ -384,7 +384,7 @@ fn run(cmd: &mut Command) -> Result<(), String> {
     Err(format!("{program} failed ({}):\n{tail}", out.status))
 }
 
-fn sha256_file(path: &Path) -> io::Result<String> {
+pub(crate) fn sha256_file(path: &Path) -> io::Result<String> {
     let mut hasher = Sha256::new();
     io::copy(&mut fs::File::open(path)?, &mut hasher)?;
     Ok(hex(&hasher.finalize()))
@@ -605,22 +605,67 @@ mod tests {
         setup_engine(&paths, torch_index_for(&scan::scan()), report).unwrap();
         assert!(engine_installed(&paths));
 
-        fs::create_dir_all(paths.models()).unwrap();
-        fs::create_dir_all(paths.comfyui_data().join("custom_nodes")).unwrap();
         let supervisor = Supervisor::new();
-        let comfy_port = free_port().unwrap();
-        let mut host = host_spec(&paths, &repo, free_port().unwrap(), "test-key");
-        let health = host.health_url.clone().unwrap().replace("/livez", "/health");
-        point_host_at_comfyui(&mut host, &paths, comfy_port);
-        supervisor.start(comfyui_spec(&paths, comfy_port)).unwrap();
-        supervisor.start(host).unwrap();
-        let result = wait_running(&supervisor, COMFYUI, COMFYUI_START_TIMEOUT)
-            .and_then(|_| wait_running(&supervisor, HOST, HOST_START_TIMEOUT));
-        let body = Command::new("curl").arg("-s").arg(&health).output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
+        let (result, url) = start_engine_and_host(&supervisor, &paths, &repo);
+        let body = Command::new("curl").arg("-s").arg(format!("{url}/health")).output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
         let log = log_tail(&paths.logs().join("comfyui.log"), 15);
         println!("{:>6.1}s {result:?}\n/health -> {body:?}\n{log}", started.elapsed().as_secs_f64());
         supervisor.stop_all();
         result.unwrap();
         assert!(body.unwrap().contains("\"comfyui_connected\":true"));
+    }
+    /// Starts ComfyUI and the host (key "test-key") on `paths`; returns the result and the host URL.
+    fn start_engine_and_host(supervisor: &Supervisor, paths: &Paths, repo: &Path) -> (Result<(), String>, String) {
+        fs::create_dir_all(paths.models()).unwrap();
+        fs::create_dir_all(paths.comfyui_data().join("custom_nodes")).unwrap();
+        let comfy_port = free_port().unwrap();
+        let mut host = host_spec(paths, repo, free_port().unwrap(), "test-key");
+        let url = host.health_url.clone().unwrap().replace("/livez", "");
+        point_host_at_comfyui(&mut host, paths, comfy_port);
+        supervisor.start(comfyui_spec(paths, comfy_port)).unwrap();
+        supervisor.start(host).unwrap();
+        let result = wait_running(supervisor, COMFYUI, COMFYUI_START_TIMEOUT)
+            .and_then(|_| wait_running(supervisor, HOST, HOST_START_TIMEOUT));
+        (result, url)
+    }
+
+    /// Downloads Z-Image Turbo for this machine (~21 GB in bf16) and makes one image through the
+    /// host's OpenAI endpoint; the response is saved as first-image.json next to the runtime.
+    /// `cargo test real_first_image -- --ignored --nocapture` (after real_engine)
+    #[test]
+    #[ignore]
+    fn real_first_image() {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..").canonicalize().unwrap();
+        let paths = Paths { root: std::env::temp_dir().join("glint-runtime-real") };
+        assert!(engine_installed(&paths), "run real_engine first");
+        let started = Instant::now();
+        let models = crate::recommend::load_catalog(&repo.join("catalog")).unwrap();
+        let zit = models.iter().find(|m| m.id == "z-image-turbo").unwrap();
+        let variant = crate::recommend::chosen_variant(&scan::scan(), zit).unwrap();
+        let next = std::cell::Cell::new(0);
+        crate::download::download_variant(&paths.models(), variant, |p| {
+            if p.verifying || p.done >= next.get() {
+                next.set(p.done + 1_000_000_000);
+                println!("{:>6.1}s {} {p:?}", started.elapsed().as_secs_f64(), variant.precision);
+            }
+        })
+        .unwrap();
+
+        let supervisor = Supervisor::new();
+        let (result, url) = start_engine_and_host(&supervisor, &paths, &repo);
+        let out = paths.root.join("first-image.json");
+        let body = r#"{"model":"z-image-turbo","prompt":"a lighthouse on a cliff at dawn, watercolor","response_format":"b64_json"}"#;
+        let curl = result.clone().map(|_| {
+            Command::new("curl")
+                .args(["-s", "-m", "900", "-H", "X-API-Key: test-key", "-H", "Content-Type: application/json", "-d", body, "-o"])
+                .arg(&out)
+                .arg(format!("{url}/v1/images/generations"))
+                .status()
+        });
+        println!("{:>6.1}s {result:?} {curl:?}", started.elapsed().as_secs_f64());
+        let log = log_tail(&paths.logs().join("comfyui.log"), 15);
+        supervisor.stop_all();
+        let json = fs::read_to_string(&out).unwrap_or_default();
+        assert!(json.contains("\"b64_json\":\"iVBORw0KGgo"), "{}\n{log}", &json[..json.len().min(500)]);
     }
 }

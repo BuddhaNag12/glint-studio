@@ -121,6 +121,33 @@ def test_catalog_rejects_presets_outside_limits(tmp_path: Path) -> None:
         load_catalog(tmp_path)
 
 
+def test_catalog_rejects_model_files_outside_the_models_folder(tmp_path: Path) -> None:
+    (tmp_path / "models").mkdir()
+    (tmp_path / "workflows").mkdir()
+    (tmp_path / "workflows" / "z-image-turbo.json").write_text("{}")
+    data = json.loads((CATALOG / "models" / "z-image-turbo.json").read_text())
+    data["variants"][0]["files"][0]["dest"] = "vae/../../escape.safetensors"
+    (tmp_path / "models" / "z-image-turbo.json").write_text(json.dumps(data))
+    with pytest.raises(CatalogError, match="dest"):
+        load_catalog(tmp_path)
+
+
+def test_every_variant_has_the_files_its_workflow_loads(models) -> None:
+    # shortcut: workflows name their model files, so each variant must ship those exact names;
+    # a smaller variant (fp8, GGUF) needs the host to inject file names into the workflow first.
+    for model in models.values():
+        if not model.variants:
+            continue
+        workflow = json.loads((CATALOG / "workflows" / f"{model.workflow}.json").read_text())
+        loaded = {
+            v for node in workflow.values() for v in node.get("inputs", {}).values()
+            if isinstance(v, str) and v.endswith((".safetensors", ".gguf", ".ckpt"))
+        }
+        assert loaded, model.id
+        for variant in model.variants:
+            assert loaded <= {f.dest.split("/")[-1] for f in variant.files}, (model.id, variant.precision)
+
+
 def test_user_styles_replace_builtins_and_bad_ones_are_skipped(tmp_path: Path) -> None:
     (tmp_path / "cartoon.json").write_text(json.dumps({"id": "cartoon", "name": "My Cartoon"}))
     (tmp_path / "broken.json").write_text("{not json")
