@@ -140,6 +140,8 @@ pub async fn start_host(app: AppHandle, state: State<'_, Runtime>) -> Result<Hos
         waits.push((COMFYUI, COMFYUI_START_TIMEOUT, comfy.log_file.clone()));
         supervisor.start(comfy).map_err(|e| format!("Couldn't start ComfyUI: {e}"))?;
     }
+    // After the ComfyUI vars, so a provider key can't take their names.
+    spec.env.extend(crate::secrets::host_env(&paths, &resource_dir(&app)?, &spec.env));
     supervisor.start(spec).map_err(|e| format!("Couldn't start the host: {e}"))?;
     tauri::async_runtime::spawn_blocking(move || {
         for (name, timeout, log) in waits {

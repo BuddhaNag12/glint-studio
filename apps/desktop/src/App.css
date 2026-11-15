@@ -64,3 +64,13 @@ pre.error { white-space: pre-wrap; font-size: 0.85rem; margin: 16px 0 12px; }
 .back { margin-top: 24px; }
 button:disabled { opacity: 0.5; cursor: default; }
 .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+.form { display: grid; gap: 16px; }
+.form label { display: grid; gap: 6px; color: var(--muted); }
+.form input, .form select {
+  font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--border);
+  border-radius: 8px; padding: 8px 10px;
+}
+.form input:focus-visible, .form select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.form p { margin: 0; min-height: 1.5em; }

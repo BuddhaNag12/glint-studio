@@ -174,3 +174,27 @@ def test_images_endpoint_routes_remote_models_to_their_provider(tmp_path, monkey
                           json={"prompt": "x", "model": "gpt-image-1", "size": "1024x1536"})
         assert res.status_code == 429
         assert res.json()["error"]["code"] == "provider_quota"
+
+
+def test_provider_check_lists_models_and_reports_a_bad_key(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    seen: list[httpx.Request] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen.append(req)
+        if req.headers["authorization"] == "Bearer sk-test":
+            return httpx.Response(401, json={"error": {"message": "Incorrect API key provided"}})
+        return httpx.Response(200, json={"data": []})
+
+    app, _, _ = _setup_test_app(tmp_path, providers_file=_providers_file(tmp_path))
+    with TestClient(app) as client:
+        app.state.providers["openai"].http = _mock(handler)
+        res = client.post("/api/v1/providers/openai/check", headers=AUTH)
+        assert res.status_code == 502 and res.json()["error"]["code"] == "provider_auth"
+        assert "Incorrect API key" in res.json()["error"]["message"]
+        assert seen[0].method == "GET" and seen[0].url == "https://api.openai.com/v1/models"
+
+        app.state.providers["openai"]._key = "sk-good"
+        assert client.post("/api/v1/providers/openai/check", headers=AUTH).json() == {"ok": True}
+        assert client.post("/api/v1/providers/comfyui/check", headers=AUTH).status_code == 404
+        assert client.post("/api/v1/providers/openai/check").status_code == 401

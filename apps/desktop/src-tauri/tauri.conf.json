@@ -34,6 +34,7 @@
     "resources": {
       "../../../host/app/": "host/app/",
       "../../../host/pyproject.toml": "host/pyproject.toml",
+      "../../../host/providers.example.json": "host/providers.example.json",
       "../../../catalog/": "catalog/"
     }
   }
