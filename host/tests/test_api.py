@@ -94,8 +94,9 @@ def _setup_test_app(tmp_path: Path, **setting_overrides: Any):
     workflows_dir = tmp_path / "workflows"
     output_dir = tmp_path / "outputs"
     workflows_dir.mkdir(parents=True, exist_ok=True)
-    (workflows_dir / "default.json").write_text(json.dumps(SAMPLE_WORKFLOW), encoding="utf-8")
-    (workflows_dir / "default.mapping.json").write_text(json.dumps(SAMPLE_MAPPING), encoding="utf-8")
+    # A user's own workflow; "default" runs the catalog model instead.
+    (workflows_dir / "sample.json").write_text(json.dumps(SAMPLE_WORKFLOW), encoding="utf-8")
+    (workflows_dir / "sample.mapping.json").write_text(json.dumps(SAMPLE_MAPPING), encoding="utf-8")
 
     config_kwargs: dict[str, Any] = {
         "api_key": "test-secret-key",
@@ -115,7 +116,7 @@ def _setup_test_app(tmp_path: Path, **setting_overrides: Any):
 def test_health_endpoint_reports_ok_and_degraded(tmp_path: Path) -> None:
     app, fake_comfy, _ = _setup_test_app(tmp_path)
     with TestClient(app) as client:
-        app.state.comfy_client = fake_comfy
+        app.state.providers["comfyui"].client = fake_comfy
         res_ok = client.get("/health")
         assert res_ok.status_code == 200
         assert res_ok.json()["status"] == "ok"
@@ -132,7 +133,7 @@ def test_health_endpoint_reports_ok_and_degraded(tmp_path: Path) -> None:
 def test_generate_requires_valid_api_key_and_rejects_unconfigured_server(tmp_path: Path) -> None:
     app, fake_comfy, _ = _setup_test_app(tmp_path)
     with TestClient(app) as client:
-        app.state.comfy_client = fake_comfy
+        app.state.providers["comfyui"].client = fake_comfy
 
         missing = client.post("/api/v1/generate", json={"prompt": "test"})
         assert missing.status_code == 401
@@ -188,7 +189,7 @@ def test_cors_preflight_allows_configured_origin_only(tmp_path: Path) -> None:
 def test_generate_default_returns_raw_image_binary(tmp_path: Path) -> None:
     app, fake_comfy, output_dir = _setup_test_app(tmp_path)
     with TestClient(app) as client:
-        app.state.comfy_client = fake_comfy
+        app.state.providers["comfyui"].client = fake_comfy
 
         res = client.post(
             "/api/v1/generate",
@@ -217,7 +218,7 @@ def test_generate_default_returns_raw_image_binary(tmp_path: Path) -> None:
 def test_generate_both_serves_signed_image_url_and_base64(tmp_path: Path) -> None:
     app, fake_comfy, output_dir = _setup_test_app(tmp_path)
     with TestClient(app) as client:
-        app.state.comfy_client = fake_comfy
+        app.state.providers["comfyui"].client = fake_comfy
 
         res = client.post(
             "/api/v1/generate",
@@ -234,7 +235,12 @@ def test_generate_both_serves_signed_image_url_and_base64(tmp_path: Path) -> Non
         assert body["image_url"].startswith("http://testserver/api/v1/images/golden-teapot-")
 
         assert fake_comfy.last_workflow is not None
-        assert fake_comfy.last_workflow["6"]["inputs"]["text"] == "a golden teapot"
+        # "default" runs Z-Image Turbo through the Lock-screen Wallpaper style.
+        nodes = fake_comfy.last_workflow
+        assert nodes["67"]["inputs"]["text"].startswith("Ultra high-detail vertical mobile wallpaper")
+        assert ". a golden teapot. Grounded tactile foreground" in nodes["67"]["inputs"]["text"]
+        assert (nodes["68"]["inputs"]["width"], nodes["68"]["inputs"]["height"]) == (624, 1344)
+        assert nodes["70"]["inputs"]["seed"] == 777
         assert fake_comfy.last_output_node_id == "9"
 
         parsed = urlsplit(body["image_url"])
@@ -281,7 +287,7 @@ def test_extract_image_title_and_filename_slug() -> None:
 def test_generate_url_and_base64_exclusive_formats(tmp_path: Path) -> None:
     app, fake_comfy, output_dir = _setup_test_app(tmp_path)
     with TestClient(app) as client:
-        app.state.comfy_client = fake_comfy
+        app.state.providers["comfyui"].client = fake_comfy
 
         res_b64 = client.post(
             "/api/v1/generate",
@@ -308,6 +314,7 @@ def test_generate_url_and_base64_exclusive_formats(tmp_path: Path) -> None:
     ("error", "expected_status"),
     [
         (ComfyExecutionError("Missing checkpoint"), 502),
+        (ComfyExecutionError("Prompt outputs failed validation: value_not_in_list"), 502),
         (ComfyConnectionError("Cannot connect"), 503),
         (ComfyTimeoutError("Timed out"), 504),
     ],
@@ -319,7 +326,7 @@ def test_generate_maps_comfy_errors_to_http_statuses(
 ) -> None:
     app, fake_comfy, _ = _setup_test_app(tmp_path)
     with TestClient(app) as client:
-        app.state.comfy_client = fake_comfy
+        app.state.providers["comfyui"].client = fake_comfy
         fake_comfy.generate_error = error
         res = client.post(
             "/api/v1/generate",
@@ -332,13 +339,107 @@ def test_generate_maps_comfy_errors_to_http_statuses(
 def test_generate_missing_workflow_returns_404(tmp_path: Path) -> None:
     app, fake_comfy, _ = _setup_test_app(tmp_path)
     with TestClient(app) as client:
-        app.state.comfy_client = fake_comfy
+        app.state.providers["comfyui"].client = fake_comfy
         res = client.post(
             "/api/v1/generate",
             headers={"Authorization": "Bearer test-secret-key"},
             json={"prompt": "sunset", "workflow": "nonexistent"},
         )
         assert res.status_code == 404
+
+
+def test_generate_runs_a_users_own_workflow_as_is(tmp_path: Path) -> None:
+    app, fake_comfy, _ = _setup_test_app(tmp_path)
+    with TestClient(app) as client:
+        app.state.providers["comfyui"].client = fake_comfy
+        res = client.post(
+            "/api/v1/generate",
+            headers={"Authorization": "Bearer test-secret-key"},
+            json={"prompt": "sunset", "workflow": "sample", "width": 4000, "height": 4000,
+                  "negative_prompt": "blur", "response_format": "url"},
+        )
+        assert res.status_code == 200
+        assert res.json()["workflow"] == "sample"
+        assert fake_comfy.last_workflow["6"]["inputs"]["text"] == "sunset"
+        assert fake_comfy.last_workflow["7"]["inputs"]["text"] == "blur"
+        assert fake_comfy.last_workflow["5"]["inputs"]["width"] == 4000  # no catalog limits
+
+
+@pytest.mark.parametrize("extra", [{"width": 4096, "height": 4096}, {"steps": 150}, {"width": 1024}])
+def test_generate_default_rejects_params_outside_the_model_limits(tmp_path: Path, extra) -> None:
+    app, fake_comfy, _ = _setup_test_app(tmp_path)
+    with TestClient(app) as client:
+        app.state.providers["comfyui"].client = fake_comfy
+        res = client.post(
+            "/api/v1/generate",
+            headers={"Authorization": "Bearer test-secret-key"},
+            json={"prompt": "sunset", **extra},
+        )
+        assert res.status_code == 422
+        assert "detail" in res.json()  # legacy body shape
+        assert fake_comfy.last_workflow is None
+
+
+def test_models_and_styles_endpoints(tmp_path: Path) -> None:
+    app, _, _ = _setup_test_app(tmp_path)
+    with TestClient(app) as client:
+        auth = {"Authorization": "Bearer test-secret-key"}
+        models = client.get("/api/v1/models", headers=auth).json()["models"]
+        assert [m["id"] for m in models] == ["z-image-turbo"]
+        assert models[0]["limits"]["sizes"]["phone"] == [624, 1344]
+        styles = {s["id"]: s for s in client.get("/api/v1/styles", headers=auth).json()["styles"]}
+        assert styles["lockscreen-wallpaper"]["overrides"]["shape"] == "phone"
+
+        missing = client.get("/api/v1/models")
+        assert missing.status_code == 401
+        assert missing.json() == {"error": {"code": "unauthorized", "message": missing.json()["error"]["message"]}}
+        wrong = client.get("/api/v1/styles", headers={"X-API-Key": "nope"})
+        assert wrong.status_code == 403 and wrong.json()["error"]["code"] == "forbidden"
+
+
+def test_user_styles_dir_replaces_the_default_style(tmp_path: Path) -> None:
+    user_styles = tmp_path / "styles"
+    user_styles.mkdir()
+    (user_styles / "lockscreen-wallpaper.json").write_text(
+        json.dumps({"id": "lockscreen-wallpaper", "name": "Mine", "prefix": "MY PREFIX"})
+    )
+    app, fake_comfy, _ = _setup_test_app(tmp_path, user_styles_dir=user_styles)
+    with TestClient(app) as client:
+        app.state.providers["comfyui"].client = fake_comfy
+        res = client.post(
+            "/api/v1/generate",
+            headers={"Authorization": "Bearer test-secret-key"},
+            json={"prompt": "sunset", "response_format": "url"},
+        )
+        assert res.status_code == 200
+        assert fake_comfy.last_workflow["67"]["inputs"]["text"] == "MY PREFIX. sunset"
+        assert fake_comfy.last_workflow["68"]["inputs"]["width"] == 1024  # no shape override now
+
+
+@pytest.mark.parametrize(
+    ("error", "code"),
+    [
+        (ComfyExecutionError("ComfyUI rejected workflow: {'type': 'value_not_in_list'}"), "model_missing"),
+        (ComfyExecutionError("CUDA out of memory"), "workflow_failed"),
+        (ComfyConnectionError("refused"), "engine_down"),
+        (ComfyTimeoutError("slow"), "timeout"),
+    ],
+)
+async def test_comfyui_provider_maps_failures_to_error_codes(error: Exception, code: str) -> None:
+    from app.catalog import load_catalog, resolve_params
+    from app.errors import ApiError
+    from app.providers.base import ProviderRequest
+    from app.providers.comfyui import ComfyUIProvider
+    from app.styles import compose
+
+    catalog = Path(__file__).resolve().parents[2] / "catalog"
+    model = load_catalog(catalog)["z-image-turbo"]
+    fake = FakeComfyClient()
+    fake.generate_error = error
+    provider = ComfyUIProvider(fake, catalog / "workflows", 5.0)  # type: ignore[arg-type]
+    with pytest.raises(ApiError) as err:
+        await provider.generate(ProviderRequest(model, compose(model, "x"), resolve_params(model)))
+    assert err.value.code == code
 
 
 class _FakeWebSocket:
@@ -574,7 +675,7 @@ def test_generate_url_mode_prunes_expired_output_files(tmp_path: Path) -> None:
     os.utime(stale_file, (old_ts, old_ts))
 
     with TestClient(app) as client:
-        app.state.comfy_client = fake_comfy
+        app.state.providers["comfyui"].client = fake_comfy
         assert not stale_file.exists()
 
         res = client.post(

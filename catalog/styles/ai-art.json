@@ -1,0 +1,8 @@
+{
+  "id": "ai-art",
+  "name": "AI Art",
+  "icon": "sparkles",
+  "prefix": "Digital artwork",
+  "suffix": "imaginative concept art, vibrant colors, intricate detail, dramatic lighting",
+  "negative": "low quality, blurry, watermark, text"
+}

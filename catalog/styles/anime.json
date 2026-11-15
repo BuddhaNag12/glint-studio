@@ -1,0 +1,8 @@
+{
+  "id": "anime",
+  "name": "Anime",
+  "icon": "star",
+  "prefix": "Anime illustration",
+  "suffix": "cel shading, expressive eyes, clean line art, vibrant colors, detailed background",
+  "negative": "photorealistic, 3d render, blurry, extra fingers, watermark, text"
+}

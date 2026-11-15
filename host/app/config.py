@@ -34,7 +34,9 @@ class Settings(BaseSettings):
     request_timeout_seconds: float = Field(default=120.0, gt=0)
     max_concurrent_jobs: int = Field(default=1, ge=1)
     output_dir: Path = Path("generated_images")
-    workflows_dir: Path = Path("workflows")
+    workflows_dir: Path = Path("workflows")  # the user's own ComfyUI workflows
+    catalog_dir: Path = Path(__file__).resolve().parents[2] / "catalog"
+    user_styles_dir: Path | None = None  # styles here replace built-ins with the same id
     sign_image_urls: bool = True
     image_url_ttl_seconds: int = Field(default=3600, ge=1)
     clear_comfy_history: bool = True
@@ -43,7 +45,9 @@ class Settings(BaseSettings):
     comfyui_temp_dir: Path | None = None
     comfyui_output_dir: Path | None = None
 
-    @field_validator("comfyui_dir", "comfyui_temp_dir", "comfyui_output_dir", mode="before")
+    @field_validator(
+        "comfyui_dir", "comfyui_temp_dir", "comfyui_output_dir", "user_styles_dir", mode="before"
+    )
     @classmethod
     def parse_optional_path(cls, value: Any) -> Any:
         """Treat empty path strings in .env as unset and expand ~ home prefixes."""

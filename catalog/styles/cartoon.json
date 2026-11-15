@@ -1,0 +1,8 @@
+{
+  "id": "cartoon",
+  "name": "Cartoon",
+  "icon": "smile",
+  "prefix": "Cartoon illustration",
+  "suffix": "bold clean outlines, flat vibrant colors, simple shading, playful character design",
+  "negative": "photorealistic, photo, 3d render, blurry, watermark, text"
+}

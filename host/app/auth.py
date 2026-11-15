@@ -8,6 +8,8 @@ import time
 
 from fastapi import Header, HTTPException, Request, status
 
+from app.errors import ApiError
+
 
 def extract_api_token(authorization: str | None, x_api_key: str | None) -> str | None:
     """Extract a credential from either Authorization Bearer or X-API-Key headers."""
@@ -80,3 +82,18 @@ def verify_image_signature(
         return False
     expected = create_image_signature(filename, exp, secret)
     return hmac.compare_digest(expected, sig)
+
+
+def require_api_key(
+    request: Request,
+    authorization: str | None = Header(default=None),
+    x_api_key: str | None = Header(default=None, alias="X-API-Key"),
+) -> None:
+    """verify_api_key for the newer endpoints: failures come back as {error:{code,message}}."""
+    try:
+        verify_api_key(request, authorization, x_api_key)
+    except HTTPException as exc:
+        code = {401: "unauthorized", 403: "forbidden"}.get(exc.status_code)
+        if code is None:
+            raise
+        raise ApiError(code, str(exc.detail)) from exc

@@ -1,0 +1,8 @@
+{
+  "id": "realistic",
+  "name": "Realistic",
+  "icon": "camera",
+  "prefix": "Photograph",
+  "suffix": "photorealistic, natural lighting, sharp focus, high detail, 35mm lens",
+  "negative": "cartoon, illustration, painting, 3d render, oversaturated, plastic skin, watermark, text"
+}

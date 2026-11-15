@@ -16,27 +16,32 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, s
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 
-from app.auth import build_signed_image_query, verify_api_key, verify_image_signature
-from app.comfy_client import (
-    ComfyClient,
-    ComfyConnectionError,
-    ComfyExecutionError,
-    ComfyImageOutput,
-    ComfyTimeoutError,
-    infer_mime_and_ext,
+from app.auth import (
+    build_signed_image_query,
+    require_api_key,
+    verify_api_key,
+    verify_image_signature,
 )
+from app.catalog import CatalogModel, load_catalog, resolve_params
+from app.comfy_client import ComfyClient, ComfyImageOutput, infer_mime_and_ext
 from app.config import Settings
+from app.errors import ApiError, api_error_handler
 from app.naming import extract_image_title, safe_header_value, title_to_filename_slug
+from app.providers.base import Provider, ProviderRequest, ProviderResult
+from app.providers.comfyui import ComfyUIProvider
 from app.schemas import GeneratedImage, GenerateRequest, GenerateResponse, HealthResponse
-from app.workflow import (
-    WorkflowNotFoundError,
-    WorkflowValidationError,
-    load_workflow_bundle,
-    prepare_workflow,
-)
+from app.styles import Style, compose, load_styles
+from app.workflow import WorkflowNotFoundError, WorkflowValidationError, load_workflow_bundle
 
 logger = logging.getLogger(__name__)
 IMAGE_FILENAME_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]*\.(png|jpg|jpeg|webp)$")
+
+# What `"workflow": "default"` on /api/v1/generate runs.
+DEFAULT_MODEL = "z-image-turbo"
+DEFAULT_STYLE = "lockscreen-wallpaper"
+# /api/v1/generate keeps the original bridge's status codes and {detail} body so existing clients
+# don't break; newer endpoints answer with {error:{code,message}} and app.errors' statuses.
+LEGACY_STATUS = {"workflow_failed": 502, "model_missing": 502}
 
 
 def _prune_expired_output_files(output_dir: Path, ttl_seconds: int) -> None:
@@ -110,6 +115,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             resolved_settings.image_url_ttl_seconds,
         )
         resolved_settings.workflows_dir.mkdir(parents=True, exist_ok=True)
+        # A broken built-in catalog file is a bug: fail at startup, not on the first request.
+        models = load_catalog(resolved_settings.catalog_dir)
+        styles = load_styles(resolved_settings.catalog_dir / "styles", resolved_settings.user_styles_dir)
 
         if not resolved_settings.is_api_key_configured:
             logger.warning(
@@ -120,7 +128,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         timeout = httpx.Timeout(resolved_settings.request_timeout_seconds, connect=10.0)
         async with httpx.AsyncClient(timeout=timeout) as http_client:
             app.state.settings = resolved_settings
-            app.state.comfy_client = ComfyClient(
+            app.state.models = models
+            app.state.styles = styles
+            comfy_client = ComfyClient(
                 http_url=resolved_settings.comfyui_http_url,
                 ws_url=resolved_settings.comfyui_ws_url,
                 http_client=http_client,
@@ -130,6 +140,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 comfyui_temp_dir=resolved_settings.comfyui_temp_dir,
                 comfyui_output_dir=resolved_settings.comfyui_output_dir,
             )
+            app.state.providers = {
+                "comfyui": ComfyUIProvider(
+                    comfy_client,
+                    resolved_settings.catalog_dir / "workflows",
+                    resolved_settings.request_timeout_seconds,
+                ),
+            }
             app.state.generation_semaphore = asyncio.Semaphore(
                 resolved_settings.max_concurrent_jobs
             )
@@ -140,6 +157,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         version="0.1.0",
         lifespan=lifespan,
     )
+    app.add_exception_handler(ApiError, api_error_handler)
 
     app.add_middleware(
         CORSMiddleware,
@@ -160,21 +178,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/health", response_model=HealthResponse)
     async def health_check(request: Request) -> JSONResponse:
         cfg: Settings = request.app.state.settings
-        comfy_client: ComfyClient = request.app.state.comfy_client
-        default_workflow_present = (
-            (cfg.workflows_dir / "default.json").is_file()
-            and (cfg.workflows_dir / "default.mapping.json").is_file()
-        )
+        comfy: ComfyUIProvider = request.app.state.providers["comfyui"]
+        default_workflow_present = DEFAULT_MODEL in request.app.state.models
 
         try:
-            await comfy_client.check_health()
-        except ComfyConnectionError as exc:
+            await comfy.health()
+        except ApiError as exc:
             payload = HealthResponse(
                 status="degraded",
                 comfyui_connected=False,
                 comfyui_url=cfg.comfyui_http_url,
                 default_workflow_present=default_workflow_present,
-                detail=str(exc),
+                detail=exc.message,
             )
             return JSONResponse(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, content=payload.model_dump())
 
@@ -185,6 +200,30 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             default_workflow_present=default_workflow_present,
         )
         return JSONResponse(status_code=status.HTTP_200_OK, content=payload.model_dump())
+
+    @app.get("/api/v1/models", dependencies=[Depends(require_api_key)])
+    async def list_models(request: Request) -> dict:
+        models: dict[str, CatalogModel] = request.app.state.models
+        return {"models": [m.model_dump(mode="json") for m in models.values()]}
+
+    @app.get("/api/v1/styles", dependencies=[Depends(require_api_key)])
+    async def list_styles(request: Request) -> dict:
+        styles: dict[str, Style] = request.app.state.styles
+        return {"styles": [s.model_dump(mode="json") for s in styles.values()]}
+
+    async def _generate_default(request: Request, body: GenerateRequest) -> ProviderResult:
+        """The legacy default: the default catalog model through the default style."""
+        model: CatalogModel = request.app.state.models[DEFAULT_MODEL]
+        style: Style | None = request.app.state.styles.get(DEFAULT_STYLE)
+        params = resolve_params(
+            model, style=style, width=body.width, height=body.height, steps=body.steps, cfg=body.cfg
+        )
+        prompt = compose(model, body.prompt, style=style, negative=body.negative_prompt)
+        provider: Provider | None = request.app.state.providers.get(model.provider)
+        if provider is None:
+            raise ApiError("provider_down", f"No '{model.provider}' provider is set up.")
+        async with request.app.state.generation_semaphore:
+            return await provider.generate(ProviderRequest(model, prompt, params, body.seed))
 
     @app.post(
         "/api/v1/generate",
@@ -198,12 +237,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         response: Response,
     ) -> Response | GenerateResponse:
         cfg: Settings = request.app.state.settings
-        comfy_client: ComfyClient = request.app.state.comfy_client
-        semaphore: asyncio.Semaphore = request.app.state.generation_semaphore
+        comfy: ComfyUIProvider = request.app.state.providers["comfyui"]
 
+        start_time = time.perf_counter()
         try:
-            workflow_template, mapping = load_workflow_bundle(cfg.workflows_dir, body.workflow)
-            workflow_payload, used_seed = prepare_workflow(workflow_template, mapping, body)
+            if body.workflow == "default":
+                result = await _generate_default(request, body)
+            else:
+                # The user's own workflow from WORKFLOWS_DIR, run as-is with no catalog or style.
+                workflow_template, mapping = load_workflow_bundle(cfg.workflows_dir, body.workflow)
+                async with request.app.state.generation_semaphore:
+                    result = await comfy.run_workflow(workflow_template, mapping, body)
         except WorkflowNotFoundError as exc:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
         except WorkflowValidationError as exc:
@@ -211,21 +255,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=str(exc),
             ) from exc
-
-        start_time = time.perf_counter()
-        try:
-            async with semaphore:
-                prompt_id, raw_images = await comfy_client.generate_images(
-                    workflow_payload,
-                    output_node_id=mapping.output_node_id,
-                    timeout_seconds=cfg.request_timeout_seconds,
-                )
-        except ComfyTimeoutError as exc:
-            raise HTTPException(status_code=status.HTTP_504_GATEWAY_TIMEOUT, detail=str(exc)) from exc
-        except ComfyConnectionError as exc:
-            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
-        except ComfyExecutionError as exc:
-            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+        except ApiError as exc:
+            raise HTTPException(
+                status_code=LEGACY_STATUS.get(exc.code, exc.status_code),
+                detail=exc.message,
+            ) from exc
+        prompt_id, raw_images, used_seed = result.job_ref, result.images, result.seed
 
         job_id = uuid.uuid4().hex
         elapsed_ms = int((time.perf_counter() - start_time) * 1000)

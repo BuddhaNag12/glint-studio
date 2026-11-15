@@ -1,0 +1,11 @@
+{
+  "id": "lockscreen-wallpaper",
+  "name": "Lock-screen Wallpaper",
+  "icon": "smartphone",
+  "prefix": "Ultra high-detail vertical mobile wallpaper, 9:19.5 aspect ratio, iOS lock screen depth effect composition",
+  "suffix": "Grounded tactile foreground anchored across the lower third, primary hero elements arching cleanly through the midground and subtly cresting into the lower edge of the upper third for lock-screen depth separation, deep atmospheric background. The upper 25 percent of the frame is completely smooth, open, low-contrast, and filled with soft diffused silver-white atmospheric mist and gentle circular bokeh, leaving clean uncluttered negative space for the lock screen clock. Photorealistic, 8k resolution, National Geographic documentary photography, crisp foreground detail, f/2.2 shallow depth of field. Clean uninhabited composition with no tourists, no modern concrete or wires, no leaves or branches crossing the top edge, uncluttered upper third, sharp foreground focus, natural unplastic textures.",
+  "negative": "tourists, people, crowds, text, watermark, modern concrete, wires, leaves crossing the top edge, branches at top edge, high-contrast canopy at the top, busy upper third, blurry foreground, plastic texture, cartoonish, oversaturated, low quality, bad anatomy",
+  "overrides": {
+    "shape": "phone"
+  }
+}

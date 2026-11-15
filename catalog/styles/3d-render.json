@@ -1,0 +1,8 @@
+{
+  "id": "3d-render",
+  "name": "3D Render",
+  "icon": "box",
+  "prefix": "3D render",
+  "suffix": "soft global illumination, subsurface scattering, studio lighting, high detail",
+  "negative": "flat, 2d, sketch, blurry, watermark, text"
+}

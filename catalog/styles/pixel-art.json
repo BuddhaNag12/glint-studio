@@ -1,0 +1,8 @@
+{
+  "id": "pixel-art",
+  "name": "Pixel Art",
+  "icon": "grid",
+  "prefix": "Pixel art",
+  "suffix": "16-bit retro game style, limited color palette, crisp pixels, no anti-aliasing",
+  "negative": "blurry, smooth gradients, photorealistic, 3d render, watermark, text"
+}

@@ -1,0 +1,31 @@
+{
+  "output_node_id": "9",
+  "width": {
+    "node_id": "68",
+    "input_key": "width"
+  },
+  "height": {
+    "node_id": "68",
+    "input_key": "height"
+  },
+  "positive_prompt": {
+    "node_id": "67",
+    "input_key": "text"
+  },
+  "negative_prompt": {
+    "node_id": "71",
+    "input_key": "text"
+  },
+  "seed": {
+    "node_id": "70",
+    "input_key": "seed"
+  },
+  "steps": {
+    "node_id": "70",
+    "input_key": "steps"
+  },
+  "cfg": {
+    "node_id": "70",
+    "input_key": "cfg"
+  }
+}

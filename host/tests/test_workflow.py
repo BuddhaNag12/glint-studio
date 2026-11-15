@@ -142,30 +142,17 @@ def test_inspect_workflow_detects_sampler_and_writes_mapping(tmp_path: Path) -> 
     assert (tmp_path / "custom.mapping.json").is_file()
 
 
-def test_repo_default_workflow_retains_wallpaper_meta_and_uses_preview_image() -> None:
-    workflows_dir = Path(__file__).resolve().parent.parent / "workflows"
-    template, mapping = load_workflow_bundle(workflows_dir, "default")
+def test_catalog_z_image_workflow_uses_preview_image_and_takes_the_prompt_directly() -> None:
+    workflows_dir = Path(__file__).resolve().parents[2] / "catalog" / "workflows"
+    template, mapping = load_workflow_bundle(workflows_dir, "z-image-turbo")
 
     assert template["9"]["class_type"] == "PreviewImage"
     assert template["9"]["inputs"]["images"] == ["65", 0]
     assert mapping.output_node_id == "9"
+    assert "72" not in template and "73" not in template  # the host composes the prompt now
 
-    prepared, used_seed = prepare_workflow(
-        template,
-        mapping,
-        GenerateRequest(prompt="Snow leopard resting on a misty Himalayan ridge at golden hour"),
-    )
+    prompt = "Snow leopard resting on a misty Himalayan ridge at golden hour"
+    prepared, used_seed = prepare_workflow(template, mapping, GenerateRequest(prompt=prompt))
     assert isinstance(used_seed, int)
-    assert prepared["68"]["inputs"]["width"] == 624
-    assert prepared["68"]["inputs"]["height"] == 1344
     assert prepared["70"]["inputs"]["steps"] == 6
-    assert prepared["72"]["class_type"] == "StringConcatenate"
-    assert "9:19.5 aspect ratio" in prepared["72"]["inputs"]["string_a"]
-    assert prepared["72"]["inputs"]["string_b"] == (
-        "Snow leopard resting on a misty Himalayan ridge at golden hour"
-    )
-    assert prepared["73"]["inputs"]["string_a"] == ["72", 0]
-    assert "upper 25 percent" in prepared["73"]["inputs"]["string_b"]
-    assert "f/2.2" in prepared["73"]["inputs"]["string_b"]
-    assert prepared["67"]["inputs"]["text"] == ["73", 0]
-    assert "tourists" in prepared["71"]["inputs"]["text"]
+    assert prepared["67"]["inputs"]["text"] == prompt

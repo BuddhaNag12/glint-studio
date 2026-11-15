@@ -1,0 +1,8 @@
+{
+  "id": "watercolor",
+  "name": "Watercolor",
+  "icon": "droplet",
+  "prefix": "Watercolor painting",
+  "suffix": "soft washes, visible paper texture, gentle color bleeds, loose brush strokes",
+  "negative": "photorealistic, 3d render, hard edges, digital art, watermark, text"
+}

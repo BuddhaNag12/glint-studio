@@ -1,0 +1,11 @@
+{
+  "id": "cinematic",
+  "name": "Cinematic",
+  "icon": "film",
+  "prefix": "Cinematic film still",
+  "suffix": "anamorphic widescreen, dramatic lighting, shallow depth of field, film grain, color graded",
+  "negative": "cartoon, illustration, flat lighting, overexposed, watermark, text",
+  "overrides": {
+    "shape": "landscape"
+  }
+}

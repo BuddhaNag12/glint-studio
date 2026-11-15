@@ -1,0 +1,35 @@
+{
+  "id": "z-image-turbo",
+  "name": "Z-Image Turbo",
+  "family": "z-image",
+  "provider": "comfyui",
+  "license": {
+    "name": "Apache-2.0",
+    "url": "https://huggingface.co/Tongyi-MAI/Z-Image-Turbo",
+    "commercial_ok": true
+  },
+  "quality_rank": 80,
+  "workflow": "z-image-turbo",
+  "defaults": { "shape": "square", "steps": 6, "cfg": 1.0 },
+  "quality": {
+    "fast": { "steps": 4 },
+    "standard": { "steps": 6 },
+    "best": { "steps": 9 }
+  },
+  "limits": {
+    "sizes": {
+      "square": [1024, 1024],
+      "portrait": [832, 1216],
+      "landscape": [1216, 832],
+      "phone": [624, 1344]
+    },
+    "custom_size": true,
+    "multiple_of": 16,
+    "max_pixels": 2097152,
+    "steps": [1, 20],
+    "cfg": [1.0, 2.0],
+    "n_max": 1,
+    "supports_negative": false,
+    "supports_seed": true
+  }
+}
