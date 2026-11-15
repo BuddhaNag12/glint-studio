@@ -13,6 +13,8 @@ from pathlib import Path
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 
@@ -29,7 +31,16 @@ from app.errors import ApiError, api_error_handler
 from app.naming import extract_image_title, safe_header_value, title_to_filename_slug
 from app.providers.base import Provider, ProviderRequest, ProviderResult
 from app.providers.comfyui import ComfyUIProvider
-from app.schemas import GeneratedImage, GenerateRequest, GenerateResponse, HealthResponse
+from app.providers.openai_compat import load_remote_providers
+from app.schemas import (
+    GeneratedImage,
+    GenerateRequest,
+    GenerateResponse,
+    HealthResponse,
+    ImageData,
+    ImagesRequest,
+    ImagesResponse,
+)
 from app.styles import Style, compose, load_styles
 from app.workflow import WorkflowNotFoundError, WorkflowValidationError, load_workflow_bundle
 
@@ -128,7 +139,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         timeout = httpx.Timeout(resolved_settings.request_timeout_seconds, connect=10.0)
         async with httpx.AsyncClient(timeout=timeout) as http_client:
             app.state.settings = resolved_settings
-            app.state.models = models
+            remote_providers, remote_models = load_remote_providers(
+                resolved_settings.providers_file, set(models), http_client
+            )
+            app.state.models = {**models, **remote_models}
             app.state.styles = styles
             comfy_client = ComfyClient(
                 http_url=resolved_settings.comfyui_http_url,
@@ -146,6 +160,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     resolved_settings.catalog_dir / "workflows",
                     resolved_settings.request_timeout_seconds,
                 ),
+                **remote_providers,
             }
             app.state.generation_semaphore = asyncio.Semaphore(
                 resolved_settings.max_concurrent_jobs
@@ -158,6 +173,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     app.add_exception_handler(ApiError, api_error_handler)
+
+    async def validation_error_handler(request: Request, exc: Exception) -> Response:
+        # The OpenAI-style endpoints answer with {error:{code,message}}; the rest keep FastAPI's
+        # {detail:[...]} so existing clients of /api/v1/generate don't break.
+        assert isinstance(exc, RequestValidationError)
+        if not request.url.path.startswith("/v1/"):
+            return await request_validation_exception_handler(request, exc)
+        first = exc.errors()[0] if exc.errors() else {}
+        where = ".".join(str(p) for p in first.get("loc", ()) if p != "body")
+        message = f"{where}: {first.get('msg', 'invalid request')}" if where else first.get("msg", "")
+        return await api_error_handler(request, ApiError("bad_params", message or "Invalid request."))
+
+    app.add_exception_handler(RequestValidationError, validation_error_handler)
 
     app.add_middleware(
         CORSMiddleware,
@@ -211,6 +239,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         styles: dict[str, Style] = request.app.state.styles
         return {"styles": [s.model_dump(mode="json") for s in styles.values()]}
 
+    async def _run(request: Request, job: ProviderRequest) -> ProviderResult:
+        provider: Provider | None = request.app.state.providers.get(job.model.provider)
+        if provider is None:
+            raise ApiError("provider_down", f"No '{job.model.provider}' provider is set up.")
+        if job.model.provider != "comfyui":
+            return await provider.generate(job)  # remote APIs don't share the local GPU
+        async with request.app.state.generation_semaphore:
+            return await provider.generate(job)
+
     async def _generate_default(request: Request, body: GenerateRequest) -> ProviderResult:
         """The legacy default: the default catalog model through the default style."""
         model: CatalogModel = request.app.state.models[DEFAULT_MODEL]
@@ -219,11 +256,53 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             model, style=style, width=body.width, height=body.height, steps=body.steps, cfg=body.cfg
         )
         prompt = compose(model, body.prompt, style=style, negative=body.negative_prompt)
-        provider: Provider | None = request.app.state.providers.get(model.provider)
-        if provider is None:
-            raise ApiError("provider_down", f"No '{model.provider}' provider is set up.")
-        async with request.app.state.generation_semaphore:
-            return await provider.generate(ProviderRequest(model, prompt, params, body.seed))
+        return await _run(request, ProviderRequest(model, prompt, params, body.seed))
+
+    @app.post(
+        "/v1/images/generations",
+        response_model=ImagesResponse,
+        response_model_exclude_none=True,
+        dependencies=[Depends(require_api_key)],
+    )
+    async def images_generations(body: ImagesRequest, request: Request) -> ImagesResponse:
+        """OpenAI-compatible image generation over every catalog and provider model."""
+        cfg: Settings = request.app.state.settings
+        models: dict[str, CatalogModel] = request.app.state.models
+        styles: dict[str, Style] = request.app.state.styles
+
+        model = models.get(body.model or DEFAULT_MODEL)
+        if model is None:
+            raise ApiError("bad_params", f"Unknown model '{body.model}'. Use one of: {', '.join(models)}.")
+        style = None
+        if body.style:
+            style = styles.get(body.style)
+            if style is None:
+                raise ApiError("bad_params", f"Unknown style '{body.style}'. Use one of: {', '.join(styles)}.")
+        width = height = None
+        if body.size and body.size != "auto":
+            width, height = (int(v) for v in body.size.split("x"))
+
+        params = resolve_params(
+            model,
+            style=style,
+            quality=None if body.quality == "auto" else body.quality,
+            width=width,
+            height=height,
+            n=body.n,
+        )
+        prompt = compose(model, body.prompt, style=style, negative=body.negative_prompt)
+        result = await _run(request, ProviderRequest(model, prompt, params, body.seed))
+
+        if body.response_format == "b64_json":
+            data = [ImageData(b64_json=base64.b64encode(img.content).decode("ascii")) for img in result.images]
+        else:
+            job_id = uuid.uuid4().hex
+            slug = title_to_filename_slug(extract_image_title(body.prompt))
+            data = [
+                ImageData(url=_build_generated_image(cfg, job_id, i, slug, img, "url").url)
+                for i, img in enumerate(result.images, start=1)
+            ]
+        return ImagesResponse(created=int(time.time()), data=data, model=model.id, seed=result.seed)
 
     @app.post(
         "/api/v1/generate",

@@ -61,6 +61,14 @@ uv run --no-sync pytest -q
 Run it against an existing ComfyUI: copy `host/.env.example` to `host/.env`, set `API_KEY`,
 then `uv run --no-sync uvicorn app.main:app --port 8000`.
 
+To add a remote image API, copy `host/providers.example.json` to `host/providers.json`, set
+`PROVIDERS_FILE=providers.json` and the key it names (e.g. `OPENAI_API_KEY`) in `host/.env`. Then:
+
+```bash
+curl http://127.0.0.1:8000/v1/images/generations -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" -d '{"prompt": "a lighthouse at dusk", "style": "cartoon"}'
+```
+
 Desktop (needs Node 22+ and [Rust + the Tauri prerequisites](https://tauri.app/start/prerequisites/)):
 
 ```bash

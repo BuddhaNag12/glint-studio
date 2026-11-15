@@ -54,9 +54,11 @@ class Limits(_Strict):
 class CatalogModel(_Strict):
     id: str = Field(pattern=ID_PATTERN)
     name: str
-    family: str
+    family: str = ""
     provider: str = "comfyui"
-    license: License
+    remote_id: str | None = None  # the provider's own name for the model, when it differs from id
+    cloud: bool = False  # runs on someone else's server and may spend the user's credits
+    license: License | None = None  # None: see the provider's terms
     quality_rank: int = 0
     workflow: str | None = None
     negative: str = ""

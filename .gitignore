@@ -5,6 +5,7 @@ __pycache__/
 .pytest_cache/
 .env
 host/generated_images/
+host/providers.json
 node_modules/
 dist/
 target/

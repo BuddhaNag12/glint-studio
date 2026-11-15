@@ -1,0 +1,25 @@
+{
+  "providers": [
+    {
+      "id": "openai",
+      "type": "openai_compat",
+      "name": "OpenAI",
+      "base_url": "https://api.openai.com/v1",
+      "api_key_env": "OPENAI_API_KEY",
+      "models": [
+        {
+          "id": "gpt-image-1",
+          "name": "GPT Image 1",
+          "family": "gpt-image",
+          "defaults": { "shape": "square" },
+          "limits": {
+            "sizes": { "square": [1024, 1024], "portrait": [1024, 1536], "landscape": [1536, 1024] },
+            "n_max": 4,
+            "supports_negative": false,
+            "supports_seed": false
+          }
+        }
+      ]
+    }
+  ]
+}

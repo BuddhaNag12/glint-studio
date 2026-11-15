@@ -63,3 +63,38 @@ class HealthResponse(BaseModel):
     comfyui_url: str
     default_workflow_present: bool
     detail: str | None = None
+
+
+class ImagesRequest(BaseModel):
+    """POST /v1/images/generations: OpenAI's fields, plus style, negative_prompt and seed.
+    Unknown OpenAI fields (user, background, output_format, ...) are ignored."""
+
+    prompt: str = Field(..., min_length=1, max_length=4000)
+    model: str | None = None  # None: the default catalog model
+    n: int = Field(default=1, ge=1, le=10)
+    size: str | None = Field(default=None, pattern=r"^(auto|\d{2,5}x\d{2,5})$")
+    response_format: Literal["b64_json", "url"] = "b64_json"
+    quality: Literal["fast", "standard", "best", "auto"] | None = None
+    style: str | None = None  # a style id from GET /api/v1/styles
+    negative_prompt: str | None = Field(default=None, max_length=4000)
+    seed: int | None = Field(default=None, ge=-1, le=2**63 - 1)
+
+    @field_validator("prompt")
+    @classmethod
+    def validate_non_blank_prompt(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("prompt must not be blank.")
+        return cleaned
+
+
+class ImageData(BaseModel):
+    b64_json: str | None = None
+    url: str | None = None
+
+
+class ImagesResponse(BaseModel):
+    created: int
+    data: list[ImageData]
+    model: str  # extension: the catalog model that ran
+    seed: int | None = None  # extension: the seed used, when the model takes one
