@@ -30,6 +30,11 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "resources": {
+      "../../../host/app/": "host/app/",
+      "../../../host/pyproject.toml": "host/pyproject.toml",
+      "../../../catalog/": "catalog/"
+    }
   }
 }

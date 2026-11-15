@@ -6,11 +6,11 @@ import hashlib
 import hmac
 import json
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 PLACEHOLDER_API_KEY = "replace-with-a-strong-random-token"
 
@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     comfyui_url: str = "http://127.0.0.1:8188"
     api_key: str = ""
     url_signing_secret: str = ""
-    cors_origins: list[str] = Field(
+    cors_origins: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: ["http://localhost:3000", "http://localhost:5173"]
     )
     public_base_url: str = "http://127.0.0.1:8000"

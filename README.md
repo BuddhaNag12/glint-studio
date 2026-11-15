@@ -85,6 +85,12 @@ npm install
 npm run tauri dev
 ```
 
+On first run the app installs its own runtime into the OS app-data folder (`dev.glintstudio.app`):
+uv, Python 3.12, a venv, and the host's dependencies (about 50 MB, no admin rights). It then starts
+the host on a free localhost port with a new API key each launch; logs go to `logs/host.log` there.
+Rust tests: `cargo test` in `apps/desktop/src-tauri`; the real install and host start against the
+network is `cargo test real_install_and_host -- --ignored --nocapture`.
+
 ## License
 
 GPL-3.0-only, matching ComfyUI. Each model keeps its own license, shown in the catalog.

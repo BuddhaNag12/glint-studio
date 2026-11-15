@@ -211,6 +211,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ],
     )
 
+    @app.get("/livez")
+    async def liveness() -> dict:
+        """The process is up and serving; says nothing about ComfyUI (the desktop app's supervisor polls this)."""
+        return {"status": "ok"}
+
     @app.get("/health", response_model=HealthResponse)
     async def health_check(request: Request) -> JSONResponse:
         cfg: Settings = request.app.state.settings

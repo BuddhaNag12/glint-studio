@@ -1,12 +1,25 @@
+mod paths;
+mod runtime;
 mod scan;
-#[allow(dead_code)] // started by the runtime installer (Phase 2)
 mod supervisor;
+
+use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![scan::scan_hardware])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .manage(runtime::Runtime::default())
+        .invoke_handler(tauri::generate_handler![
+            scan::scan_hardware,
+            runtime::install_core,
+            runtime::start_host
+        ])
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            if let tauri::RunEvent::Exit = event {
+                app.state::<runtime::Runtime>().supervisor.stop_all();
+            }
+        });
 }

@@ -143,6 +143,7 @@ def test_health_endpoint_reports_ok_and_degraded(tmp_path: Path) -> None:
         assert res_down.status_code == 503
         assert res_down.json()["status"] == "degraded"
         assert res_down.json()["comfyui_connected"] is False
+        assert client.get("/livez").status_code == 200  # alive even with ComfyUI down
 
 
 def test_generate_requires_valid_api_key_and_rejects_unconfigured_server(tmp_path: Path) -> None:
@@ -717,3 +718,10 @@ def test_settings_and_argv_expand_tilde_home_paths() -> None:
     assert base_dir == Path("~/Documents/ComfyUI").expanduser()
     assert temp_dir is None
     assert output_dir is None
+
+
+def test_cors_origins_from_env_accepts_comma_list_and_json(monkeypatch) -> None:
+    monkeypatch.setenv("CORS_ORIGINS", "tauri://localhost, http://tauri.localhost")
+    assert Settings().cors_origins == ["tauri://localhost", "http://tauri.localhost"]
+    monkeypatch.setenv("CORS_ORIGINS", '["http://a"]')
+    assert Settings().cors_origins == ["http://a"]
