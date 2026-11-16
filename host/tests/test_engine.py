@@ -18,11 +18,14 @@ from app.model_folders import candidates, extra_model_paths, file_present, norma
 
 CATALOG = Settings().catalog_dir
 MODELS = load_catalog(CATALOG)
-ZIT = MODELS["z-image-turbo"]
+# The real files are ~20 GB; Windows writes every byte of a truncated file, so the tests use tiny ones.
+ZIT = MODELS["z-image-turbo"] = MODELS["z-image-turbo"].model_copy(deep=True)
+for _f in ZIT.variants[0].files:
+    _f.bytes = 16
 
 
 def _install(root: Path, model, rename: dict[str, str] | None = None) -> None:
-    """Sparse files of the right size, at dest or at a renamed category folder."""
+    """Files of the catalog's size, at dest or at a renamed category folder."""
     for f in model.variants[0].files:
         category, name = f.dest.split("/")
         p = root / (rename or {}).get(category, category) / name
