@@ -112,6 +112,15 @@ async def dashboard_page(request: Request):
     return FileResponse(page, headers={"Cache-Control": "no-store"})
 
 
+@router.get("/m", include_in_schema=False)
+async def phone_page(request: Request):
+    """The phone page, from any address: it holds no data, and asks for a key like any other client."""
+    page = _page(request).with_name("phone.html")
+    if not page.is_file():
+        raise ApiError("not_found", "The phone page isn't installed with this host.")
+    return FileResponse(page, headers={"Cache-Control": "no-store"})
+
+
 @router.get("/assets/{name}", include_in_schema=False)
 async def dashboard_asset(name: str, request: Request):
     assets = (_page(request).parent / "assets").resolve()

@@ -278,7 +278,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/v1/models", dependencies=[Depends(require_api_key)])
     async def list_models(request: Request) -> dict:
         models: dict[str, CatalogModel] = request.app.state.models
-        return {"models": [m.model_dump(mode="json") for m in models.values()]}
+        cloud = "cloud" in request.state.key.scopes  # a key that can't use cloud models doesn't see them
+        return {"models": [m.model_dump(mode="json") for m in models.values() if cloud or not m.cloud]}
 
     @app.get("/api/v1/styles", dependencies=[Depends(require_api_key)])
     async def list_styles(request: Request) -> dict:

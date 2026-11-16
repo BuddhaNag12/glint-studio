@@ -141,6 +141,9 @@ pub async fn ensure_host(app: &AppHandle) -> Result<HostInfo, String> {
     }
     // A LAN switch restarts the running host; free its port first so it keeps the same one.
     supervisor.stop(HOST);
+    if host.is_none() {
+        kill_orphans(&paths.venv_python()); // first start: a crashed or rebuilt app may have left its host on our port
+    }
     if !paths.venv_python().exists() {
         return Err("The runtime isn't installed yet.".into());
     }
@@ -488,6 +491,23 @@ pub(crate) fn find_file(dir: &Path, name: &str) -> Option<PathBuf> {
 
 /// The host's usual port; another one only when something else holds it.
 const HOST_PORT: u16 = 7788;
+
+/// Kills host and ComfyUI processes left behind by an app that's gone: they run our venv's Python and
+/// their parent has exited. A second running app's processes still have a live parent, so they stay.
+fn kill_orphans(python: &Path) {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always));
+    let alive = |pid: Pid| pid.as_u32() > 1 && sys.process(pid).is_some();
+    for p in sys.processes().values() {
+        if p.cmd().first().is_some_and(|exe| Path::new(exe) == python) && !p.parent().is_some_and(alive) {
+            eprintln!("stopping a host left by an earlier run: pid {}", p.pid());
+            if p.kill() {
+                p.wait(); // so its port is free before host_port looks
+            }
+        }
+    }
+}
 
 fn host_port(last: Option<&HostInfo>, lan: bool) -> io::Result<u16> {
     let addr = if lan { "0.0.0.0" } else { "127.0.0.1" };

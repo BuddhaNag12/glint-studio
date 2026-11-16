@@ -352,10 +352,15 @@ Each phase ends with a working milestone, and each can ship on its own.
   - **Security:** the API needs the key from every address. The cookie pages (`/`, `/login`, `/api/v1/dashboard/connect`) still refuse any Host but `127.0.0.1` and `localhost`. Dashboard sessions are signed with the key, so they survive a host restart.
 - Done 2026-11-16: API keys.
   - **Extra keys**, one per app or phone, are made on the Connect page. Each has a name, scopes (`local` by default, `cloud` opt-in) and an optional daily image cap. A key is shown once; `keys.json` holds only sha256 hashes.
-  - Extra keys can only make images and see their own jobs and events. Settings, stats, models, styles and keys need the main key. Making, changing or revoking a key also needs a request from this computer, so a leaked main key can't plant a key that outlives rotating it.
+  - Extra keys can only list models and styles, make images, and see their own jobs and events. A key without `cloud` doesn't see cloud models. Settings, stats, changing styles and keys need the main key. Making, changing or revoking a key also needs a request from this computer, so a leaked main key can't plant a key that outlives rotating it.
   - Over the cap a key gets `daily_cap` (429), counted over a rolling 24 hours. A `local` key asking for a cloud model gets `forbidden` (403).
   - **Rotating the main key:** Setup & Cloud Keys → Make a new main key. It replaces the keychain key and restarts the host; extra keys keep working.
   - **Image links:** they use the address the caller used, and the tunnel gets https.
+- Done 2026-11-16: the phone page.
+  - **Pairing:** Connect → Pair a phone (on this Wi-Fi, or anywhere when the public link is on) makes a `local` key and shows a QR code of `<address>/m#key=<key>`. Without LAN or the link, the button is replaced by a hint.
+  - **`/m`** is served from any address with no cookie. It moves the key from the link into the phone's localStorage, then shows the dashboard's Generate page. A revoked key shows how to pair again.
+  - **Old dashboard tabs** reload when their key stops working, so after a rotation they show the expired page instead of retrying forever.
+  - **Leftover hosts:** on start the app stops host and ComfyUI processes that run its Python but whose app has gone (a crash or a `tauri dev` rebuild), so it keeps port 7788.
 
 **Phase 7 – Release (about 1 week)**
 - Signing: macOS notarization; Windows code signing (SignPath offers free signing for open-source projects).

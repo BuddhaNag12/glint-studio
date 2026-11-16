@@ -96,3 +96,6 @@ pre.snippet { margin: 0; padding: 12px; background: var(--bg); border-radius: 8p
 .key-form .switch { color: var(--fg); font-weight: 400; display: flex; }
 .key-form .switch input { width: auto; }
 @media (max-width: 640px) { .keys th:nth-child(4), .keys td:nth-child(4), .keys th:nth-child(5), .keys td:nth-child(5) { display: none; } }
+.pairing { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; margin-top: 16px; }
+.pairing > div { flex: 1 1 240px; }
+.qr { width: 220px; height: 220px; flex: none; border-radius: 8px; }

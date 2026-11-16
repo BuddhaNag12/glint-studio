@@ -193,6 +193,11 @@ def test_dashboard_login_cookie_and_connect(tmp_path: Path) -> None:
         assert client.get("/").text == "<h1>dash</h1>"
         assert client.get("/assets/app.js").text == "1"
         assert client.get("/assets/..%2Fdashboard.html").status_code == 404
+        # The phone page answers any address and any name, without a cookie.
+        phone = TestClient(app, client=("192.168.1.20", 50000), base_url="http://192.168.1.5:7788")
+        assert phone.get("/m").status_code == 404  # not built yet
+        (page / "phone.html").write_text("<h1>phone</h1>")
+        assert phone.get("/m").text == "<h1>phone</h1>"
         assert client.get("/api/v1/dashboard/connect").json() == {
             "url": "http://testserver", "api_key": "test-secret-key"
         }
@@ -272,6 +277,8 @@ def test_extra_keys_scopes_and_daily_cap(tmp_path: Path) -> None:
         app.state.models["z-image-turbo"] = model.model_copy(update={"cloud": True})
         res = client.post("/v1/images/generations", json=body, headers=phone)
         assert res.status_code == 403 and res.json()["error"]["code"] == "forbidden"
+        assert client.get("/api/v1/models", headers=phone).json()["models"] == []
+        assert len(client.get("/api/v1/models", headers=AUTH).json()["models"]) == 1
         app.state.models["z-image-turbo"] = model
         assert client.post("/v1/images/generations", json=body, headers=phone).status_code == 200  # cap lifted
 

@@ -29,6 +29,11 @@ export async function connect(): Promise<Connection> {
   return conn!;
 }
 
+/** The phone page has no cookie: it brings the key it was paired with. */
+export function setKey(api_key: string) {
+  conn = { url: location.origin, api_key };
+}
+
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = { "Content-Type": "application/json", Authorization: `Bearer ${conn?.api_key}` };
   const res = await fetch(path, { ...init, headers });
@@ -48,8 +53,15 @@ export function onJobEvents(handle: (e: JobEvent) => void, onOpen?: () => void):
     ws = new WebSocket(`${scheme}://${location.host}/api/v1/events`, ["glint.v1", `glint.key.${conn?.api_key ?? ""}`]);
     ws.onopen = () => onOpen?.();
     ws.onmessage = (m) => handle(JSON.parse(m.data));
-    ws.onclose = () => !stopped && setTimeout(open, 3000);
+    ws.onclose = () => !stopped && setTimeout(retry, 3000);
   };
+  // A refused key (the main key was replaced, or this one revoked) won't come back: reload, and the page
+  // says why instead of retrying forever. Anything else is the host restarting, so keep trying.
+  const retry = () =>
+    fetch("/api/v1/models", { headers: { Authorization: `Bearer ${conn?.api_key}` } }).then(
+      (r) => (r.status === 401 || r.status === 403 ? location.reload() : open()),
+      open,
+    );
   open();
   return () => {
     stopped = true;

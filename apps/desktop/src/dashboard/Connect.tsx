@@ -1,4 +1,5 @@
 import { FormEvent, useEffect, useState } from "react";
+import qrcode from "qrcode-generator";
 import { api, ApiKey, Connection, Network } from "./api";
 
 function Copy({ text, label }: { text: string; label: string }) {
@@ -18,13 +19,32 @@ function Copy({ text, label }: { text: string; label: string }) {
   );
 }
 
+/** Black on white with a quiet zone, whatever the theme: phone cameras read that best. */
+function Qr({ text }: { text: string }) {
+  const qr = qrcode(0, "M");
+  qr.addData(text);
+  qr.make();
+  const n = qr.getModuleCount();
+  let d = "";
+  for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) if (qr.isDark(y, x)) d += `M${x} ${y}h1v1h-1z`;
+  return (
+    <svg className="qr" viewBox={`-4 -4 ${n + 8} ${n + 8}`} role="img" aria-label="QR code that pairs a phone" shapeRendering="crispEdges">
+      <rect x={-4} y={-4} width={n + 8} height={n + 8} fill="#fff" />
+      <path d={d} fill="#000" />
+    </svg>
+  );
+}
+
+type Share = { url: string; how: string };
+
 type Draft = { id: string | null; name: string; cloud: boolean; cap: string };
 const NEW: Draft = { id: null, name: "", cloud: false, cap: "" };
 const when = (t: number | null) => (t ? new Date(t * 1000).toLocaleString() : "Never");
 
 /** Extra keys, one per app or phone: revoke one without touching the others. */
-function Keys() {
+function Keys({ shares }: { shares: Share[] }) {
   const [keys, setKeys] = useState<ApiKey[]>([]);
+  const [pair, setPair] = useState<{ name: string; link: string; how: string } | null>(null);
   const [draft, setDraft] = useState<Draft>(NEW);
   const [made, setMade] = useState<{ name: string; key: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -47,6 +67,16 @@ function Keys() {
       : api<ApiKey & { key: string }>("/api/v1/keys", { method: "POST", body }).then((k) => setMade({ name: k.name, key: k.key }));
     done.then(() => (setDraft(NEW), load()), (e) => setError(e.message));
   };
+  // A phone gets its own local-only key; the QR code opens the phone page with it.
+  const pairPhone = (share: Share) => {
+    setError(null);
+    setMade(null);
+    const body = JSON.stringify({ name: `Phone, ${new Date().toLocaleDateString()}`, scopes: ["local"], daily_cap: null });
+    api<ApiKey & { key: string }>("/api/v1/keys", { method: "POST", body }).then(
+      (k) => (setPair({ name: k.name, link: `${share.url}/m#key=${k.key}`, how: share.how }), load()),
+      (e) => setError(e.message),
+    );
+  };
   const revoke = (k: ApiKey) =>
     confirm(`Revoke "${k.name}"? Apps using it stop working at once.`) &&
     api(`/api/v1/keys/${k.id}`, { method: "DELETE" }).then(() => (draft.id === k.id && setDraft(NEW), load()), (e) => setError(e.message));
@@ -58,6 +88,32 @@ function Keys() {
         Give each app or phone its own key, so you can stop one without changing the others. These keys can only make
         images; settings need the main key above.
       </p>
+      <div className="actions">
+        {shares.map((s) => (
+          <button key={s.url} onClick={() => pairPhone(s)}>
+            Pair a phone {s.how}
+          </button>
+        ))}
+      </div>
+      {shares.length === 0 && <p className="muted">To pair a phone, turn on sharing on your local network or the public link above.</p>}
+      {pair && (
+        <div className="made pairing" role="status">
+          <Qr text={pair.link} />
+          <div>
+            <p>
+              <strong>Scan this with the phone's camera.</strong> It opens Glint Studio on the phone, already signed in
+              with its own key ("{pair.name}"), which can use models on this computer only.
+            </p>
+            <p className="muted">
+              {pair.how === "anywhere"
+                ? "The public link changes when Glint Studio restarts; pair the phone again then."
+                : "The phone needs to be on the same Wi-Fi as this computer."}{" "}
+              Anyone who scans this code can make images, so don't share a picture of it.
+            </p>
+            <button onClick={() => setPair(null)}>Done</button>
+          </div>
+        </div>
+      )}
       {keys.length > 0 && (
         <table className="data keys">
           <thead>
@@ -226,7 +282,12 @@ export default function Connect({ conn }: { conn: Connection }) {
           {error && <p className="error" role="alert">{error}</p>}
         </section>
       )}
-      <Keys />
+      <Keys
+        shares={[
+          ...(lanUrl ? [{ url: lanUrl, how: "on this Wi-Fi" }] : []),
+          ...(tunnelUrl ? [{ url: tunnelUrl, how: "anywhere" }] : []),
+        ]}
+      />
       <section className="card">
         <div className="model-head">
           <h2>Try it</h2>
