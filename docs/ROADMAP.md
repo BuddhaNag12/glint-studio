@@ -366,6 +366,7 @@ Each phase ends with a working milestone, and each can ship on its own.
 - Signing: macOS notarization; Windows code signing (SignPath offers free signing for open-source projects).
 - Linux AppImage and .deb, and the Tauri auto-updater.
 - License notices: the app is GPL-3.0; the model licenses are shown in the catalog, and provider terms are linked on the Providers page.
+- Done 2026-11-16: release builds. Pushing a tag like `v0.1.0` runs `.github/workflows/release.yml`, which builds macOS (Apple Silicon and Intel), Windows and Linux installers into a draft GitHub release. The tag must match the version in `tauri.conf.json`. The builds aren't signed yet, and the release notes say how to open them.
 
 **Later:**
 - LoRAs, img2img/inpaint, batch.

@@ -109,6 +109,15 @@ Rust tests: `cargo test` in `apps/desktop/src-tauri`; the real installs against 
 `cargo test real_install_and_host -- --ignored --nocapture`, then `cargo test real_engine -- --ignored --nocapture`,
 then `cargo test real_first_image -- --ignored --nocapture` (downloads Z-Image Turbo, about 21 GB, and makes one image).
 
+## Release
+
+1. Set the same version in `apps/desktop/src-tauri/tauri.conf.json` and `apps/desktop/package.json`, and commit.
+2. Tag it and push the tag: `git tag v0.1.0 && git push origin v0.1.0`.
+3. The Release workflow builds the installers for macOS (Apple Silicon and Intel), Windows and Linux into a draft
+   GitHub release. Check the draft, then publish it.
+
+The installers aren't signed yet, so macOS and Windows warn on first open.
+
 ## License
 
 GPL-3.0-only, matching ComfyUI. Each model keeps its own license, shown in the catalog.
