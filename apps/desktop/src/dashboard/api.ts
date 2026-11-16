@@ -9,6 +9,17 @@ export type Network = {
   tunnel: { on: boolean; status: "off" | "downloading" | "starting" | "running" | "failed"; url: string | null; error: string | null };
 };
 
+// Mirrors _key_view in host/app/dashboard.py. Times are unix seconds.
+export type ApiKey = {
+  id: string;
+  name: string;
+  scopes: ("local" | "cloud")[];
+  daily_cap: number | null;
+  created: number;
+  used_24h: number;
+  last_used: number | null;
+};
+
 let conn: Connection | null = null;
 
 export async function connect(): Promise<Connection> {

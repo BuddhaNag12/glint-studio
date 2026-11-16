@@ -119,6 +119,13 @@ pub async fn start_host(app: AppHandle) -> Result<HostInfo, String> {
 
 /// Starts the host, and ComfyUI too when the engine is installed (the host is pointed at it).
 /// Returns the running host as is when both are already up.
+/// The next host start uses this key instead of the last one (the keychain already has it).
+pub(crate) async fn replace_host_key(app: &AppHandle, key: String) {
+    if let Some(info) = app.state::<Runtime>().host.lock().await.as_mut() {
+        info.api_key = key;
+    }
+}
+
 pub async fn ensure_host(app: &AppHandle) -> Result<HostInfo, String> {
     let state = app.state::<Runtime>();
     let mut host = state.host.lock().await;
@@ -527,6 +534,7 @@ pub fn host_spec(paths: &Paths, resources: &Path, port: u16, api_key: &str, lan:
         ("HARDWARE_FILE", path(paths.hardware_file())),
         ("STATS_DB", path(paths.stats_db())),
         ("DASHBOARD_DIR", path(resources.join("dashboard"))),
+        ("KEYS_FILE", path(paths.keys_file())),
         ("NETWORK_FILE", path(paths.network_file())),
         ("TUNNEL_FILE", path(paths.tunnel_file())),
         ("SERVE_ON_NETWORK", lan.to_string()),
@@ -655,6 +663,7 @@ mod tests {
         assert!(spec.args.contains(&"127.0.0.1".to_string()));
         assert_eq!(env("SERVE_ON_NETWORK"), Some("false"));
         assert_eq!(env("NETWORK_FILE").map(PathBuf::from), Some(PathBuf::from("/data").join("network.json")));
+        assert_eq!(env("KEYS_FILE").map(PathBuf::from), Some(PathBuf::from("/data").join("keys.json")));
 
         let lan = host_spec(&paths, Path::new("/res"), 4321, "k", true);
         assert!(lan.args.contains(&"0.0.0.0".to_string()));

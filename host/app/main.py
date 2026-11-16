@@ -30,10 +30,11 @@ from fastapi.responses import FileResponse, JSONResponse
 from app.auth import (
     WS_PROTOCOL,
     build_signed_image_query,
-    is_valid_api_key,
     require_api_key,
+    require_main_key,
     verify_api_key,
     verify_image_signature,
+    ws_api_key,
     ws_protocol_key,
 )
 from app.catalog import ID_PATTERN, CatalogModel, load_catalog, resolve_params
@@ -43,6 +44,7 @@ from app.dashboard import Sessions
 from app.dashboard import router as dashboard_router
 from app.errors import ApiError, api_error_handler
 from app.jobs import Job, JobQueue
+from app.keys import Keys
 from app.local_models import Downloads
 from app.naming import extract_image_title, safe_header_value, title_to_filename_slug
 from app.providers.base import ProviderRequest
@@ -193,6 +195,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 keep_seconds=resolved_settings.image_url_ttl_seconds,  # finished jobs live as long as their URLs
                 on_finish=app.state.stats.record,
             )
+            app.state.keys = Keys(resolved_settings.keys_file, resolved_settings.api_key)
             app.state.sessions = Sessions(resolved_settings.api_key.strip())
             # Downloads get their own client: no overall timeout on a 20 GB file.
             async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0)) as download_client:
@@ -306,7 +309,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         cfg: Settings = request.app.state.settings
         request.app.state.styles = load_styles(cfg.catalog_dir / "styles", cfg.user_styles_dir)
 
-    @app.put("/api/v1/styles/{style_id}", dependencies=[Depends(require_api_key)])
+    @app.put("/api/v1/styles/{style_id}", dependencies=[Depends(require_main_key)])
     async def save_style(style_id: str, body: Style, request: Request) -> dict:
         """Saves a user copy: a new style, or an edit that replaces the built-in with the same id."""
         if body.id != style_id:
@@ -317,7 +320,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         _reload_styles(request)
         return body.model_dump(mode="json")
 
-    @app.delete("/api/v1/styles/{style_id}", status_code=status.HTTP_204_NO_CONTENT, dependencies=[Depends(require_api_key)])
+    @app.delete("/api/v1/styles/{style_id}", status_code=status.HTTP_204_NO_CONTENT, dependencies=[Depends(require_main_key)])
     async def delete_style(style_id: str, request: Request) -> None:
         """Deletes the user copy: a built-in goes back to its default, a user style is gone."""
         path = _user_style_path(request, style_id)
@@ -326,7 +329,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         path.unlink()
         _reload_styles(request)
 
-    @app.post("/api/v1/providers/{provider_id}/check", dependencies=[Depends(require_api_key)])
+    @app.post("/api/v1/providers/{provider_id}/check", dependencies=[Depends(require_main_key)])
     async def check_provider(provider_id: str, request: Request) -> dict:
         """Tests a remote provider's key; the desktop app's "Test key" button."""
         provider = request.app.state.providers.get(provider_id)
@@ -341,13 +344,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         provider = request.app.state.providers.get(job.model.provider)
         if provider is None:
             raise ApiError("provider_down", f"No '{job.model.provider}' provider is set up.")
-        return request.app.state.jobs.submit(
+        key = request.state.key
+        scope = "cloud" if job.model.cloud else "local"
+        if scope not in key.scopes:
+            where = "cloud models, which may spend credits" if scope == "cloud" else "models on this computer"
+            raise ApiError("forbidden", f"This key can't use {where}. Allow it on the Connect page.")
+        jobs: JobQueue = request.app.state.jobs
+        if key.daily_cap is not None:
+            made, _ = request.app.state.stats.key_usage().get(key.id, (0, 0))
+            waiting = sum(j.key == key.id and j.status in ("queued", "running") for j in jobs.jobs.values())
+            if made + waiting >= key.daily_cap:
+                raise ApiError("daily_cap", f"This key's limit is {key.daily_cap} images a day. Try again later.")
+        return jobs.submit(
             lambda on_progress: provider.generate(job, on_progress),
             model=job.model.id,
             prompt=user_prompt,
             response_format=response_format,
             local=job.model.provider == "comfyui",  # remote APIs don't share the local GPU
             style=style.id if style else None,
+            key=key.id,
         )
 
     def _plan_images(request: Request, body: ImagesRequest) -> tuple[ProviderRequest, Style | None]:
@@ -421,10 +436,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         job = _submit(request, *_plan_images(request, body), body.prompt, body.response_format)
         return {"id": job.id, "status": job.status, "queue_position": jobs.queue_position(job)}
 
+    def _own_job(request: Request, job_id: str) -> Job:
+        """The main key sees every job; another key only its own."""
+        job = request.app.state.jobs.get(job_id)
+        key = request.state.key
+        if not key.owner and job.key != key.id:
+            raise ApiError("not_found", f"No job '{job_id}'.")
+        return job
+
     @app.get("/api/v1/jobs/{job_id}", dependencies=[Depends(require_api_key)])
     async def get_job(job_id: str, request: Request) -> dict:
         jobs: JobQueue = request.app.state.jobs
-        job = jobs.get(job_id)
+        job = _own_job(request, job_id)
         view = jobs.view(job)
         if job.status == "done":
             view["seed"] = job.result.seed if job.result else None
@@ -434,7 +457,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.delete("/api/v1/jobs/{job_id}", dependencies=[Depends(require_api_key)])
     async def cancel_job(job_id: str, request: Request) -> dict:
         jobs: JobQueue = request.app.state.jobs
-        job = jobs.get(job_id)
+        job = _own_job(request, job_id)
         jobs.cancel(job)
         await job.done.wait()
         return jobs.view(job)
@@ -442,7 +465,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.websocket("/api/v1/events")
     async def job_events(ws: WebSocket) -> None:
         """Every job's queued/started/progress/done/failed/cancelled events, as JSON messages."""
-        if not is_valid_api_key(ws.app.state.settings, ws.headers, ws.query_params.get("api_key")):
+        key = ws_api_key(ws.app, ws.headers, ws.query_params.get("api_key"))
+        if key is None:
             await ws.close(code=1008, reason="Missing or invalid API key.")
             return
         # A browser drops the connection unless the server echoes one of the protocols it offered.
@@ -452,7 +476,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         async def forward() -> None:
             while True:
-                await ws.send_json(await listener.get())
+                event = await listener.get()
+                job = jobs.jobs.get(event["id"])
+                if key.owner or (job is not None and job.key == key.id):
+                    await ws.send_json(event)
 
         sender = asyncio.create_task(forward())
         try:

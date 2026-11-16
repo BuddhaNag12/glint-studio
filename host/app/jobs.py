@@ -33,6 +33,7 @@ class Job:
     response_format: str
     local: bool
     style: str | None = None
+    key: str | None = None  # the id of the API key that asked for it
     status: JobStatus = "queued"
     progress: float = 0.0
     created: float = field(default_factory=time.time)
@@ -75,10 +76,11 @@ class JobQueue:
         self._listeners: set[asyncio.Queue[dict]] = set()
 
     def submit(
-        self, run: Runner, *, model: str, prompt: str, response_format: str, local: bool, style: str | None = None
+        self, run: Runner, *, model: str, prompt: str, response_format: str, local: bool, style: str | None = None,
+        key: str | None = None,
     ) -> Job:
         self._prune()
-        job = Job(uuid.uuid4().hex, model, prompt, response_format, local, style)
+        job = Job(uuid.uuid4().hex, model, prompt, response_format, local, style, key)
         self.jobs[job.id] = job
         self._emit("queued", job)
         job.task = asyncio.create_task(self._drive(job, run))

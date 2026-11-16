@@ -21,9 +21,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from pydantic import BaseModel
 
-from app.auth import require_api_key
+from app.auth import require_main_key
 from app.catalog import CatalogModel
 from app.errors import ApiError
+from app.keys import Key, KeyFields
 from app.local_models import (
     Downloads,
     chosen_variant,
@@ -69,11 +70,13 @@ class Sessions:
 
 
 def local_only(request: Request) -> None:
-    """The cookie pages answer only to this computer's names: a site renamed to 127.0.0.1 (DNS
-    rebinding), a LAN address or the tunnel can't reach them."""
+    """The cookie pages and the sharing settings answer only to this computer: a site renamed to
+    127.0.0.1 (DNS rebinding), a LAN address or the tunnel can't reach them. Tunnel requests come
+    from cloudflared on 127.0.0.1, but uvicorn takes their address from its X-Forwarded-For."""
     allowed = request.app.state.settings.allowed_hosts
     host = request.headers.get("host", "").rsplit(":", 1)[0]
-    if allowed != ["*"] and host not in allowed:
+    client = request.client.host if request.client else ""
+    if client not in ("127.0.0.1", "::1") or (allowed != ["*"] and host not in allowed):
         raise HTTPException(400, "Invalid host header")
 
 
@@ -140,7 +143,7 @@ def _local_model(request: Request, model_id: str) -> CatalogModel:
     return model
 
 
-@router.get("/api/v1/local-models", dependencies=[Depends(require_api_key)])
+@router.get("/api/v1/local-models", dependencies=[Depends(require_main_key)])
 async def local_models(request: Request) -> dict:
     """Every local model, best fit for this machine first, with download progress."""
     models_dir = _models_dir(request)
@@ -152,7 +155,7 @@ async def local_models(request: Request) -> dict:
     return {"hardware": hw, "models": rows}
 
 
-@router.post("/api/v1/local-models/{model_id}/download", status_code=202, dependencies=[Depends(require_api_key)])
+@router.post("/api/v1/local-models/{model_id}/download", status_code=202, dependencies=[Depends(require_main_key)])
 async def start_download(model_id: str, request: Request) -> dict:
     model = _local_model(request, model_id)
     hw = await asyncio.to_thread(load_hardware, request.app.state.settings.hardware_file, _models_dir(request))
@@ -161,7 +164,7 @@ async def start_download(model_id: str, request: Request) -> dict:
     return downloads.view(model.id)
 
 
-@router.get("/api/v1/local-models/{model_id}/download", dependencies=[Depends(require_api_key)])
+@router.get("/api/v1/local-models/{model_id}/download", dependencies=[Depends(require_main_key)])
 async def download_status(model_id: str, request: Request) -> dict:
     view = request.app.state.downloads.view(_local_model(request, model_id).id)
     if view is None:
@@ -169,7 +172,7 @@ async def download_status(model_id: str, request: Request) -> dict:
     return view
 
 
-@router.delete("/api/v1/local-models/{model_id}/download", dependencies=[Depends(require_api_key)])
+@router.delete("/api/v1/local-models/{model_id}/download", dependencies=[Depends(require_main_key)])
 async def cancel_download(model_id: str, request: Request) -> dict:
     downloads: Downloads = request.app.state.downloads
     if downloads.model_id == _local_model(request, model_id).id:
@@ -177,13 +180,13 @@ async def cancel_download(model_id: str, request: Request) -> dict:
     return downloads.view(model_id) or {"status": "idle"}
 
 
-@router.get("/api/v1/stats", dependencies=[Depends(require_api_key)])
+@router.get("/api/v1/stats", dependencies=[Depends(require_main_key)])
 async def stats(request: Request, days: int = Query(default=14, ge=1, le=90)) -> dict:
     db: Stats = request.app.state.stats
     return db.summary(days)
 
 
-@router.get("/api/v1/system", dependencies=[Depends(require_api_key)])
+@router.get("/api/v1/system", dependencies=[Depends(require_main_key)])
 async def system(request: Request) -> dict:
     """Live status: the engine's devices and queue, and the models folder."""
     models_dir = _models_dir(request)
@@ -244,7 +247,7 @@ def _network_file(request: Request) -> Path:
     return path
 
 
-@router.get("/api/v1/network", dependencies=[Depends(require_api_key)])
+@router.get("/api/v1/network", dependencies=[Depends(require_main_key)])
 async def network(request: Request) -> dict:
     cfg = request.app.state.settings
     wanted = _read_json(_network_file(request))
@@ -266,7 +269,7 @@ async def network(request: Request) -> dict:
     }
 
 
-@router.put("/api/v1/network", dependencies=[Depends(require_api_key), Depends(local_only)])
+@router.put("/api/v1/network", dependencies=[Depends(require_main_key), Depends(local_only)])
 async def set_network(body: NetworkRequest, request: Request) -> dict:
     """Changed only from this computer. Network sharing restarts the host, so not mid-job."""
     path = _network_file(request)
@@ -281,3 +284,36 @@ async def set_network(body: NetworkRequest, request: Request) -> dict:
     tmp.write_text(json.dumps(wanted))
     os.replace(tmp, path)  # the app never reads half a file
     return await network(request)
+
+
+# Making, changing and revoking keys only from this computer: a leaked main key used over the
+# network can't plant a key that outlives rotating it.
+@router.get("/api/v1/keys", dependencies=[Depends(require_main_key)])
+async def list_keys(request: Request) -> dict:
+    usage = request.app.state.stats.key_usage()
+    return {"keys": [_key_view(k, usage) for k in request.app.state.keys.keys.values()]}
+
+
+@router.post("/api/v1/keys", status_code=201, dependencies=[Depends(require_main_key), Depends(local_only)])
+async def create_key(body: KeyFields, request: Request) -> dict:
+    key, token = request.app.state.keys.create(body)
+    return {**_key_view(key, {}), "key": token}  # the only time the key itself is shown
+
+
+@router.put("/api/v1/keys/{key_id}", dependencies=[Depends(require_main_key), Depends(local_only)])
+async def update_key(key_id: str, body: KeyFields, request: Request) -> dict:
+    key = request.app.state.keys.update(key_id, body)
+    if key is None:
+        raise ApiError("not_found", f"No key '{key_id}'.")
+    return _key_view(key, request.app.state.stats.key_usage())
+
+
+@router.delete("/api/v1/keys/{key_id}", status_code=204, dependencies=[Depends(require_main_key), Depends(local_only)])
+async def delete_key(key_id: str, request: Request) -> None:
+    if not request.app.state.keys.delete(key_id):
+        raise ApiError("not_found", f"No key '{key_id}'.")
+
+
+def _key_view(key: Key, usage: dict) -> dict:
+    made, last = usage.get(key.id, (0, None))
+    return {**key.model_dump(exclude={"hash"}), "used_24h": made, "last_used": int(last) if last else None}

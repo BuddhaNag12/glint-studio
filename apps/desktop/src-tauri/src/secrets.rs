@@ -156,6 +156,16 @@ pub fn host_api_key() -> Result<String, String> {
     }
 }
 
+/// A new main key, for when the old one leaked. Apps using it stop working until they get the new
+/// one; extra keys keep working. Dashboard sessions are signed with the key, so they end too.
+#[tauri::command]
+pub async fn rotate_host_key(app: AppHandle, state: State<'_, Runtime>) -> Result<HostInfo, String> {
+    let key = runtime::new_key()?;
+    entry(HOST_KEY_ENTRY)?.set_password(&key).map_err(|e| format!("Couldn't save the new key: {e}"))?;
+    runtime::replace_host_key(&app, key).await;
+    restart_host(app, state).await
+}
+
 fn entry(id: &str) -> Result<keyring::Entry, String> {
     keyring::Entry::new(SERVICE, id).map_err(|e| format!("The keychain isn't available: {e}"))
 }

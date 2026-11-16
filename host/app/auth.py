@@ -7,9 +7,10 @@ import hmac
 import time
 from collections.abc import Mapping
 
-from fastapi import Header, HTTPException, Request, status
+from fastapi import Depends, Header, HTTPException, Request, status
 
 from app.errors import ApiError
+from app.keys import Key
 
 
 def extract_api_token(authorization: str | None, x_api_key: str | None) -> str | None:
@@ -35,14 +36,10 @@ def ws_protocol_key(headers: Mapping[str, str]) -> str | None:
     return None
 
 
-def is_valid_api_key(settings, headers: Mapping[str, str], query_key: str | None = None) -> bool:
+def ws_api_key(app, headers: Mapping[str, str], query_key: str | None = None) -> Key | None:
     """For WebSockets, where browsers can't set headers: the headers, a subprotocol, or an ?api_key= query."""
     token = extract_api_token(headers.get("authorization"), headers.get("x-api-key")) or ws_protocol_key(headers) or query_key
-    return bool(
-        settings.is_api_key_configured
-        and token
-        and hmac.compare_digest(token.encode("utf-8"), settings.api_key.strip().encode("utf-8"))
-    )
+    return app.state.keys.find(token) if app.state.settings.is_api_key_configured else None
 
 
 def verify_api_key(
@@ -66,11 +63,13 @@ def verify_api_key(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    if not hmac.compare_digest(token.encode("utf-8"), settings.api_key.strip().encode("utf-8")):
+    key = request.app.state.keys.find(token)
+    if key is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Invalid API key.",
         )
+    request.state.key = key
 
 
 def create_image_signature(filename: str, expires_at: int, secret: bytes) -> str:
@@ -120,3 +119,9 @@ def require_api_key(
         if code is None:
             raise
         raise ApiError(code, str(exc.detail)) from exc
+
+
+def require_main_key(request: Request, _: None = Depends(require_api_key)) -> None:
+    """Settings and downloads: only the main key. Extra keys can make images and nothing else."""
+    if not request.state.key.owner:
+        raise ApiError("forbidden", "This key can only make images. Changing settings needs the main key.")

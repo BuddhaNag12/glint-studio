@@ -14,6 +14,7 @@ export default function Providers({ host: firstHost }: { host: HostInfo }) {
   const [key, setKey] = useState("");
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<Note | null>(null);
+  const [rotating, setRotating] = useState(false);
 
   const refresh = async () => {
     const list = await invoke<Provider[]>("list_providers");
@@ -132,6 +133,38 @@ export default function Providers({ host: firstHost }: { host: HostInfo }) {
         >
           Open the dashboard
         </button>
+      </section>
+
+      <section className="card">
+        <h2>Main API key</h2>
+        <p className="lead">
+          If the main key leaked, make a new one. Apps using the old key stop working until you give them the new one; keys
+          made on the Connect page keep working.
+        </p>
+        {/* Two steps, inline: the webview may not show window.confirm. */}
+        {rotating ? (
+          <div className="actions">
+            <button
+              className="primary"
+              disabled={busy}
+              onClick={() =>
+                run(async () => {
+                  setRotating(false);
+                  setHost(await invoke<HostInfo>("rotate_host_key"));
+                  await invoke("open_dashboard"); // the old dashboard login ended with the old key
+                  return "Done. The dashboard's Connect page shows the new key.";
+                })
+              }
+            >
+              Yes, make a new key
+            </button>
+            <button onClick={() => setRotating(false)}>Cancel</button>
+          </div>
+        ) : (
+          <button disabled={busy} onClick={() => setRotating(true)}>
+            Make a new main key
+          </button>
+        )}
       </section>
     </main>
   );

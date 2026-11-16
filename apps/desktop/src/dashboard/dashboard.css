@@ -85,3 +85,14 @@ pre.snippet { margin: 0; padding: 12px; background: var(--bg); border-radius: 8p
 .switch { display: flex; align-items: center; gap: 8px; font-weight: 600; }
 .share > div + div { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border); }
 .share p { margin: 6px 0 0; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.keys { margin-bottom: 16px; }
+.keys .actions { justify-content: flex-end; flex-wrap: nowrap; }
+.made { padding: 12px; border: 1px solid var(--accent); border-radius: 8px; margin-bottom: 16px; }
+.made p { margin: 0 0 8px; }
+.made p:last-child { margin: 0; }
+.key-form { padding-top: 16px; border-top: 1px solid var(--border); }
+.key-form h3 { margin: 0; }
+.key-form .switch { color: var(--fg); font-weight: 400; display: flex; }
+.key-form .switch input { width: auto; }
+@media (max-width: 640px) { .keys th:nth-child(4), .keys td:nth-child(4), .keys th:nth-child(5), .keys td:nth-child(5) { display: none; } }

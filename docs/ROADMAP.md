@@ -340,7 +340,7 @@ Each phase ends with a working milestone, and each can ship on its own.
 - Still to do: a sampler choice under Advanced (the catalog doesn't describe samplers yet).
 
 **Phase 6 – Server and remote (about 1 week)**
-- LAN toggle, API key management with scopes (`local` by default, `cloud` opt-in, optional daily cap), `tunnel.rs`, and the Connect page grows endpoint docs and snippets. A key that survives restarts, so other apps don't need a new one each launch (done 2026-11-16: keychain key and a stable port; rotating it is still to do).
+- LAN toggle, API key management with scopes (`local` by default, `cloud` opt-in, optional daily cap), `tunnel.rs`, and the Connect page grows endpoint docs and snippets. A key that survives restarts, so other apps don't need a new one each launch (done 2026-11-16: keychain key and a stable port).
 - **Mobile web page:** when LAN or the tunnel is on, the host serves a small phone-friendly Generate page with the same plain-language controls.
   - To pair a phone, scan a QR code on the Server page. The QR holds the URL and a key just for that phone, which can be revoked.
   - The key stays on that phone. The desktop UI still never keeps a key in browser storage (rule 5).
@@ -350,6 +350,11 @@ Each phase ends with a working milestone, and each can ship on its own.
   - **LAN:** restarts only the host, bound to 0.0.0.0 on the same port. ComfyUI keeps running. The change is refused while images are in progress. The setting is kept between launches.
   - **Public link:** a Cloudflare quick tunnel. cloudflared is downloaded on first use and checked against a pinned sha256. The link is read from its log and reported back through `tunnel.json`. It is never turned on at launch.
   - **Security:** the API needs the key from every address. The cookie pages (`/`, `/login`, `/api/v1/dashboard/connect`) still refuse any Host but `127.0.0.1` and `localhost`. Dashboard sessions are signed with the key, so they survive a host restart.
+- Done 2026-11-16: API keys.
+  - **Extra keys**, one per app or phone, are made on the Connect page. Each has a name, scopes (`local` by default, `cloud` opt-in) and an optional daily image cap. A key is shown once; `keys.json` holds only sha256 hashes.
+  - Extra keys can only make images and see their own jobs and events. Settings, stats, models, styles and keys need the main key. Making, changing or revoking a key also needs a request from this computer, so a leaked main key can't plant a key that outlives rotating it.
+  - Over the cap a key gets `daily_cap` (429), counted over a rolling 24 hours. A `local` key asking for a cloud model gets `forbidden` (403).
+  - **Rotating the main key:** Setup & Cloud Keys → Make a new main key. It replaces the keychain key and restarts the host; extra keys keep working.
   - **Image links:** they use the address the caller used, and the tunnel gets https.
 
 **Phase 7 – Release (about 1 week)**

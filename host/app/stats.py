@@ -24,8 +24,10 @@ class Stats:
         self.db = sqlite3.connect(str(path) if path else ":memory:", check_same_thread=False)
         self.db.execute(
             "CREATE TABLE IF NOT EXISTS jobs (finished REAL, model TEXT, style TEXT, status TEXT,"
-            " error TEXT, queue_ms INTEGER, run_ms INTEGER, local INTEGER)"
+            " error TEXT, queue_ms INTEGER, run_ms INTEGER, local INTEGER, key TEXT)"
         )
+        if "key" not in {row[1] for row in self.db.execute("PRAGMA table_info(jobs)")}:
+            self.db.execute("ALTER TABLE jobs ADD COLUMN key TEXT")  # logs from before per-app keys
         self.db.execute("DELETE FROM jobs WHERE finished < ?", (time.time() - KEEP_DAYS * DAY,))
         self.db.commit()
 
@@ -35,13 +37,22 @@ class Stats:
             queue_ms = int(((job.started or finished) - job.created) * 1000)
             err = job.api_error
             self.db.execute(
-                "INSERT INTO jobs VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO jobs (finished, model, style, status, error, queue_ms, run_ms, local, key)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (finished, job.model, job.style, job.status, err.code if err else None, queue_ms,
-                 job.elapsed_ms, int(job.local)),
+                 job.elapsed_ms, int(job.local), job.key),
             )
             self.db.commit()
         except sqlite3.Error:
             logger.exception("Couldn't record job %s", job.id)  # analytics must never fail a job
+
+    def key_usage(self, now: float | None = None) -> dict[str, tuple[int, float]]:
+        """Per key id: (images made in the last 24 hours, when it last made one)."""
+        since = (time.time() if now is None else now) - DAY
+        return {key: (recent, last) for key, recent, last in self.db.execute(
+            "SELECT key, SUM(status = 'done' AND finished >= ?), MAX(finished) FROM jobs"
+            " WHERE key IS NOT NULL AND status = 'done' GROUP BY key", (since,)
+        )}
 
     def summary(self, days: int, now: float | None = None) -> dict:
         now = time.time() if now is None else now

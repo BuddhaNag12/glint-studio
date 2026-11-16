@@ -20,6 +20,7 @@ ErrorCode = Literal[
     "provider_rejected",
     "provider_down",
     "not_found",
+    "daily_cap",
 ]
 
 ERROR_STATUS: dict[str, int] = {
@@ -35,6 +36,7 @@ ERROR_STATUS: dict[str, int] = {
     "provider_rejected": 422,
     "provider_down": 503,
     "not_found": 404,
+    "daily_cap": 429,  # this key's own limit; provider_quota is the provider's
 }
 
 

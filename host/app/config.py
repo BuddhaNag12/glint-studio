@@ -53,6 +53,7 @@ class Settings(BaseSettings):
     dashboard_dir: Path | None = None  # the built dashboard web page
     network_file: Path | None = None  # sharing the dashboard asks for, {"lan", "tunnel"}; the app applies it
     tunnel_file: Path | None = None  # the app's report on the public link, {"status", "url", "error"}
+    keys_file: Path | None = None  # keys.json: extra API keys, hashed; unset keeps them in memory
     serve_on_network: bool = False  # the app started this host on every address, not just 127.0.0.1
     # Host header values the dashboard pages accept; ["*"] accepts any. Guards them against DNS
     # rebinding. The API needs the key in a header, so it answers any Host (LAN, tunnel).

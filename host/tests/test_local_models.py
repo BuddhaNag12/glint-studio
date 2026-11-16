@@ -15,12 +15,14 @@ from app.catalog import CatalogModel, ModelFile, Variant, load_catalog
 from app.config import Settings
 from app.dashboard import Sessions, login_signature
 from app.errors import ApiError
+from app.keys import Keys
 from app.local_models import Downloads, chosen_variant, recommend
 from tests.test_api import _setup_test_app
 
 GB = 1e9
 CATALOG = Path(__file__).resolve().parents[2] / "catalog"
 AUTH = {"Authorization": "Bearer test-secret-key"}
+LOCAL = ("127.0.0.1", 50000)  # TestClient's own address isn't this computer's
 
 
 def hw(backend: str, vram: float, ram: float, disk: float) -> dict:
@@ -180,7 +182,7 @@ def test_dashboard_login_cookie_and_connect(tmp_path: Path) -> None:
     (page / "dashboard.html").write_text("<h1>dash</h1>")
     (page / "assets/app.js").write_text("1")
     app, _, _ = _setup_test_app(tmp_path, dashboard_dir=page, allowed_hosts=["testserver"])
-    with TestClient(app) as client:
+    with TestClient(app, client=LOCAL) as client:
         assert client.get("/").status_code == 403
         assert client.get("/api/v1/dashboard/connect").json()["error"]["code"] == "unauthorized"
         exp = int(time.time()) + 30
@@ -207,7 +209,7 @@ def test_network_settings_for_the_app(tmp_path: Path) -> None:
     app, _, _ = _setup_test_app(
         tmp_path, network_file=net, tunnel_file=tunnel, allowed_hosts=["testserver"], public_base_url="http://h:7788"
     )
-    with TestClient(app) as client:
+    with TestClient(app, client=LOCAL) as client:
         view = client.get("/api/v1/network", headers=AUTH).json()
         assert view["lan"] == {"on": False, "active": False, "url": None}
         assert view["tunnel"] == {"on": False, "status": "off", "url": None, "error": None}
@@ -223,6 +225,8 @@ def test_network_settings_for_the_app(tmp_path: Path) -> None:
         assert view["tunnel"]["url"] == "https://x.trycloudflare.com"
         # Only from this computer, not over the LAN or the tunnel.
         assert client.put("/api/v1/network", json={"lan": False}, headers={**AUTH, "Host": "x.trycloudflare.com"}).status_code == 400
+        lan = TestClient(app, client=("192.168.1.20", 50000))  # even when it says Host: 127.0.0.1
+        assert lan.put("/api/v1/network", json={"lan": False}, headers={**AUTH, "Host": "testserver"}).status_code == 400
 
         app.state.settings.serve_on_network = True
         url = client.get("/api/v1/network", headers=AUTH).json()["lan"]["url"]
@@ -231,6 +235,51 @@ def test_network_settings_for_the_app(tmp_path: Path) -> None:
     app, _, _ = _setup_test_app(tmp_path)
     with TestClient(app) as client:  # a host run on its own has nothing to share through
         assert client.get("/api/v1/network", headers=AUTH).json()["error"]["code"] == "not_found"
+
+
+def test_extra_keys_scopes_and_daily_cap(tmp_path: Path) -> None:
+    keys_file = tmp_path / "keys.json"
+    app, fake, _ = _setup_test_app(tmp_path, keys_file=keys_file, allowed_hosts=["testserver"])
+    body = {"prompt": "a fox", "response_format": "b64_json"}
+    with TestClient(app, client=LOCAL) as client:
+        app.state.providers["comfyui"].client = fake
+        res = client.post("/api/v1/keys", json={"name": "Phone", "daily_cap": 1}, headers=AUTH)
+        assert res.status_code == 201
+        made = res.json()
+        token, key_id = made.pop("key"), made["id"]
+        assert made["scopes"] == ["local"] and "hash" not in made
+        assert token not in keys_file.read_text()  # only its hash is kept
+        assert Keys(keys_file, "main").find(token).id == key_id  # and it survives a restart
+        phone = {"X-API-Key": token}
+
+        assert client.post("/v1/images/generations", json=body, headers=phone).status_code == 200
+        res = client.post("/v1/images/generations", json=body, headers=phone)
+        assert res.status_code == 429 and res.json()["error"]["code"] == "daily_cap"
+        assert client.post("/v1/images/generations", json=body, headers=AUTH).status_code == 200  # no cap
+        [listed] = client.get("/api/v1/keys", headers=AUTH).json()["keys"]
+        assert listed["used_24h"] == 1 and listed["last_used"]
+
+        # Another key makes images and nothing else, and sees only its own jobs.
+        for path in ["/api/v1/keys", "/api/v1/stats", "/api/v1/system", "/api/v1/local-models"]:
+            assert client.get(path, headers=phone).json()["error"]["code"] == "forbidden"
+        assert client.delete("/api/v1/styles/cartoon", headers=phone).status_code == 403
+        job = client.post("/api/v1/jobs", json=body, headers=AUTH).json()["id"]
+        assert client.get(f"/api/v1/jobs/{job}", headers=phone).status_code == 404
+
+        # No cloud scope, no cloud models.
+        client.put(f"/api/v1/keys/{key_id}", json={"name": "Phone", "daily_cap": None}, headers=AUTH)
+        model = app.state.models["z-image-turbo"]
+        app.state.models["z-image-turbo"] = model.model_copy(update={"cloud": True})
+        res = client.post("/v1/images/generations", json=body, headers=phone)
+        assert res.status_code == 403 and res.json()["error"]["code"] == "forbidden"
+        app.state.models["z-image-turbo"] = model
+        assert client.post("/v1/images/generations", json=body, headers=phone).status_code == 200  # cap lifted
+
+        # Keys are managed only from this computer; then a revoked key is refused.
+        lan = TestClient(app, client=("192.168.1.20", 50000))
+        assert lan.post("/api/v1/keys", json={"name": "x"}, headers=AUTH).status_code == 400
+        assert client.delete(f"/api/v1/keys/{key_id}", headers=AUTH).status_code == 204
+        assert client.post("/v1/images/generations", json=body, headers=phone).status_code == 403
 
 
 def test_stats_and_system(tmp_path: Path) -> None:

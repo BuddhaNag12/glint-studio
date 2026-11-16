@@ -57,6 +57,10 @@ impl Paths {
     pub fn stats_db(&self) -> PathBuf {
         self.root.join("stats.db")
     }
+    /// Extra API keys (hashed) that the dashboard makes for other apps and phones.
+    pub fn keys_file(&self) -> PathBuf {
+        self.root.join("keys.json")
+    }
     /// What the dashboard asks to share ({"lan", "tunnel"}); the host writes it, the app applies it.
     pub fn network_file(&self) -> PathBuf {
         self.root.join("network.json")
