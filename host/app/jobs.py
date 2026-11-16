@@ -8,6 +8,7 @@ long it may run once it has one.
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import logging
 import time
@@ -15,14 +16,14 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Literal
 
-from app.comfy_client import ProgressFn
+from app.comfy_client import PreviewFn, ProgressFn
 from app.errors import ApiError
 from app.providers.base import ProviderResult
 
 logger = logging.getLogger(__name__)
 
 JobStatus = Literal["queued", "running", "done", "failed", "cancelled"]
-Runner = Callable[[ProgressFn], Awaitable[ProviderResult]]
+Runner = Callable[[ProgressFn, PreviewFn], Awaitable[ProviderResult]]
 
 
 @dataclass(eq=False)
@@ -158,7 +159,7 @@ class JobQueue:
                 job.status, job.started = "running", time.time()
                 self._emit("started", job)
                 try:
-                    job.result = await asyncio.wait_for(run(lambda v: self._progress(job, v)), self.run_timeout)
+                    job.result = await asyncio.wait_for(run(lambda v: self._progress(job, v), lambda b: self._preview(job, b)), self.run_timeout)
                 except TimeoutError:
                     raise ApiError("timeout", f"Generation took over {self.run_timeout:.0f}s.") from None
             finally:
@@ -182,8 +183,12 @@ class JobQueue:
         job.progress = value
         self._emit("progress", job)
 
-    def _emit(self, event: str, job: Job) -> None:
-        message = {"event": event, **self.view(job)}
+    def _preview(self, job: Job, image: bytes) -> None:
+        # Only on the event, never kept on the job: previews are for whoever is watching right now.
+        self._emit("preview", job, preview=base64.b64encode(image).decode())
+
+    def _emit(self, event: str, job: Job, **extra: Any) -> None:
+        message = {"event": event, **self.view(job), **extra}
         for listener in self._listeners:
             with contextlib.suppress(asyncio.QueueFull):
                 listener.put_nowait(message)

@@ -1,6 +1,31 @@
-import { FormEvent, useEffect, useRef, useState } from "react";
+import { CSSProperties, FormEvent, KeyboardEvent, useEffect, useRef, useState } from "react";
 import { api, JobEvent, Model, onJobEvents, Quality, secs, Style } from "./api";
+import { Alert, Icon, iconOr, useConfirm } from "./ui";
+import StyleEditor, { BLANK, copyOf, Listed } from "./Styles";
 
+// Each built-in style's tile, made with the model itself (src/dashboard/styles/<id>.jpg).
+const SAMPLES = import.meta.glob("./styles/*.jpg", { eager: true, query: "?url", import: "default" }) as Record<string, string>;
+const sampleOf = (id: string): string | undefined => SAMPLES[`./styles/${id}.jpg`];
+
+const EXAMPLES = [
+  "A lighthouse on a cliff at dusk, warm light in the windows",
+  "A red fox curled up in fresh snow",
+  "A cozy reading nook with rain on the window",
+  "A tiny astronaut tending a garden on the moon",
+];
+const QUALITY: Record<Quality, string> = { fast: "Fast", standard: "Standard", best: "Best" };
+
+type Body = {
+  prompt: string;
+  model: string;
+  style?: string;
+  size?: string;
+  quality?: Quality;
+  seed?: number;
+  steps?: number;
+  cfg?: number;
+  negative_prompt?: string;
+};
 // GET /api/v1/jobs/{id}: jobs.view() plus seed and data once done.
 type JobView = {
   id: string;
@@ -12,61 +37,137 @@ type JobView = {
   seed?: number | null;
   data?: { b64_json?: string }[];
 };
-type Result = JobView & { prompt: string; model: string; style: string };
+/** One prompt and the image it made. Finished turns are kept in this browser. */
+type Turn = Omit<JobView, "data"> & {
+  body: Body;
+  modelName: string;
+  styleName: string;
+  shape: string;
+  w: number;
+  h: number;
+  created: number;
+  image?: string; // base64 PNG
+  preview?: string; // base64 JPEG while sampling; never stored
+};
 
+// The page scrolls, with the composer stuck to the bottom: the newest turn is at the very end.
+const toEnd = (behavior: ScrollBehavior) => requestAnimationFrame(() => document.scrollingElement?.scrollTo({ top: 1e9, behavior }));
 const finished = (r: { status: string }) => ["done", "failed", "cancelled"].includes(r.status);
-const QUALITY: Record<Quality, string> = { fast: "Fast", standard: "Standard", best: "Best" };
 
-export default function Generate() {
+// shortcut: the chat lives in this browser's IndexedDB with no cap (a 1024² PNG is ~1.5 MB); add paging or a
+// limit if people keep hundreds of images here.
+const store = (mode: IDBTransactionMode, fn: (s: IDBObjectStore) => IDBRequest | void) =>
+  new Promise<unknown>((ok, fail) => {
+    const open = indexedDB.open("glint-chat", 1);
+    open.onupgradeneeded = () => open.result.createObjectStore("turns", { keyPath: "id" });
+    open.onerror = () => fail(open.error);
+    open.onsuccess = () => {
+      const tx = open.result.transaction("turns", mode);
+      const req = fn(tx.objectStore("turns"));
+      tx.oncomplete = () => ok(req?.result);
+      tx.onerror = () => fail(tx.error);
+    };
+  });
+
+/** A chat: each message is a full prompt, each reply the image it made. `phone` is the paired-phone page. */
+export default function Generate({ phone }: { phone?: boolean }) {
   const [models, setModels] = useState<Model[]>([]);
-  const [styles, setStyles] = useState<Style[]>([]);
+  const [styles, setStyles] = useState<Listed[]>([]);
   const [modelId, setModelId] = useState("");
   const [styleId, setStyleId] = useState("");
   const [shape, setShape] = useState(""); // "": the style's shape, else the model's default
   const [quality, setQuality] = useState<Quality | "">("");
-  const [prompt, setPrompt] = useState("");
   const [seed, setSeed] = useState("");
   const [steps, setSteps] = useState("");
   const [cfg, setCfg] = useState("");
   const [negative, setNegative] = useState("");
-  const [results, setResults] = useState<Result[]>([]);
+  const [prompt, setPrompt] = useState("");
+  const [panel, setPanel] = useState<"" | "style" | "more">(""); // the drawer open above the prompt
+  const [turns, setTurns] = useState<Turn[]>([]);
+  const [editing, setEditing] = useState<{ style: Style; fresh: boolean } | null>(null);
+  const [full, setFull] = useState<Turn | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const live = useRef(results);
-  live.current = results;
+  const live = useRef(turns);
+  live.current = turns;
+  const kept = useRef(new Set<string>());
+  const box = useRef<HTMLTextAreaElement>(null);
+  const composer = useRef<HTMLDivElement>(null);
 
+  // An open drawer closes like a menu: Esc, or a press outside the composer (not while the style editor is open).
+  useEffect(() => {
+    if (!panel) return;
+    const close = (e: Event) => {
+      if (document.querySelector("dialog[open]")) return;
+      if (e.type === "keydown" ? (e as globalThis.KeyboardEvent).key === "Escape" : !composer.current?.contains(e.target as Node)) setPanel("");
+    };
+    document.addEventListener("keydown", close);
+    document.addEventListener("pointerdown", close);
+    return () => (document.removeEventListener("keydown", close), document.removeEventListener("pointerdown", close));
+  }, [panel]);
+  const confirm = useConfirm();
+
+  const loadStyles = () =>
+    api<{ styles: Listed[] }>("/api/v1/styles").then(
+      (r) => (setStyles(r.styles), r.styles),
+      (e) => (setError(e.message), [] as Listed[]),
+    );
   useEffect(() => {
     api<{ models: Model[] }>("/api/v1/models").then((r) => {
       setModels(r.models);
       setModelId((id) => id || r.models[0]?.id || "");
     }, (e) => setError(e.message));
-    api<{ styles: Style[] }>("/api/v1/styles").then((r) => setStyles(r.styles), (e) => setError(e.message));
+    loadStyles();
+    store("readonly", (s) => s.getAll()).then((all) => {
+      const old = (all as Turn[]).sort((a, b) => a.created - b.created);
+      old.filter(finished).forEach((t) => kept.current.add(t.id));
+      setTurns((now) => [...old, ...now.filter((t) => !old.some((o) => o.id === t.id))]);
+      // Jobs still going when the page was left: catch up, or mark them lost if the engine restarted since.
+      for (const t of old.filter((t) => !finished(t)))
+        api<JobView>(`/api/v1/jobs/${t.id}`).then(
+          ({ data, ...v }) => merge(t.id, { ...v, image: data?.[0]?.b64_json }),
+          () => merge(t.id, { status: "failed", error: { code: "lost", message: "This one was lost when the engine restarted." } }),
+        );
+      toEnd("auto");
+    }, () => {}); // no IndexedDB (a private window): the chat just isn't kept
   }, []);
 
-  // A finished job never goes back to unfinished, whichever of the event and the fetch lands last.
-  const merge = (id: string, v: Partial<JobView>) =>
-    setResults((all) =>
-      all.map((r) => (r.id !== id || (finished(r) && !finished({ status: v.status ?? r.status })) ? r : { ...r, ...v, model: r.model })),
-    );
-  const refresh = (id: string) => api<JobView>(`/api/v1/jobs/${id}`).then((v) => merge(id, v), () => {});
+  // Keep each turn once it has its final state; the image arrives a moment after the "done" event.
+  useEffect(() => {
+    for (const t of turns)
+      if (finished(t) && (t.status !== "done" || t.image) && !kept.current.has(t.id)) {
+        kept.current.add(t.id);
+        const { preview: _p, ...rest } = t;
+        store("readwrite", (s) => s.put(rest)).catch(() => {});
+      }
+  }, [turns]);
 
-  // Events carry progress; the image and seed come from the job itself once it's done. After a reconnect,
-  // catch up on every unfinished job, since its events may have been missed.
+  // A finished turn never goes back to unfinished, whichever of the event and the fetch lands last.
+  const merge = (id: string, v: Partial<Turn>) =>
+    setTurns((all) => all.map((t) => (t.id !== id || (finished(t) && !finished({ status: v.status ?? t.status })) ? t : { ...t, ...v })));
+  const refresh = (id: string) =>
+    api<JobView>(`/api/v1/jobs/${id}`).then(({ data, ...v }) => merge(id, { ...v, image: data?.[0]?.b64_json }), () => {});
+
+  // Events carry progress and previews; the image and seed come from the job once it's done. After a
+  // reconnect, catch up on every unfinished turn, since its events may have been missed.
   useEffect(
     () =>
       onJobEvents(
-        (e: JobEvent) => {
-          merge(e.id, e);
+        ({ event, preview, ...e }: JobEvent) => {
+          merge(e.id, event === "preview" ? { ...e, preview } : e);
           if (finished(e)) refresh(e.id);
         },
-        () => live.current.filter((r) => !finished(r)).forEach((r) => refresh(r.id)),
+        () => live.current.filter((t) => !finished(t)).forEach((t) => refresh(t.id)),
       ),
     [],
   );
 
   const model = models.find((m) => m.id === modelId);
   const usable = styles.filter((s) => !s.models || s.models.includes(modelId));
+  const style = usable.find((s) => s.id === styleId);
   const qualities = (Object.keys(QUALITY) as Quality[]).filter((q) => model?.quality[q]);
   const preset = quality ? model?.quality[quality] : undefined;
+  const [minSteps, maxSteps] = model?.limits.steps ?? [];
+  const [minCfg, maxCfg] = model?.limits.cfg ?? [];
   const pickModel = (id: string) => {
     setModelId(id);
     setShape("");
@@ -75,182 +176,437 @@ export default function Generate() {
     setCfg("");
   };
 
-  const submit = (e: FormEvent) => {
-    e.preventDefault();
-    if (!model) return;
-    const size = shape && model.limits.sizes[shape];
-    const num = (v: string) => (v === "" ? undefined : Number(v));
-    const body = {
-      prompt,
-      model: modelId,
-      style: styleId || undefined,
-      size: size ? `${size[0]}x${size[1]}` : undefined,
-      quality: quality || undefined,
-      seed: num(seed),
-      steps: num(steps),
-      cfg: num(cfg),
-      negative_prompt: negative.trim() || undefined,
-    };
+  const send = (body: Body, m: Model, styleName: string, shapeName: string) => {
+    // The frame takes the image's shape before the image exists: the shape asked for, the style's, or the model's.
+    const named = shapeName || String(styles.find((s) => s.id === body.style)?.overrides.shape ?? "") || m.defaults.shape;
+    const [w, h] = m.limits.sizes[named] ?? [1, 1];
     setError(null);
     api<JobView>("/api/v1/jobs", { method: "POST", body: JSON.stringify(body) }).then(
       (job) => {
-        setResults((all) => [
-          { ...job, progress: 0, elapsed_ms: null, error: null, prompt, model: model.name, style: styleId },
-          ...all,
-        ]);
+        const turn: Turn = { ...job, progress: 0, elapsed_ms: null, error: null, body, modelName: m.name, styleName, shape: shapeName, w, h, created: Date.now() };
+        setTurns((all) => [...all, turn]);
+        store("readwrite", (s) => s.put(turn)).catch(() => {}); // kept now too, so leaving the page doesn't lose it
+        toEnd("smooth");
         refresh(job.id); // in case it finished before it was in the list
       },
       (e) => setError(e.message),
     );
   };
 
-  const [minSteps, maxSteps] = model?.limits.steps ?? [];
-  const [minCfg, maxCfg] = model?.limits.cfg ?? [];
+  const submit = (e?: FormEvent) => {
+    e?.preventDefault();
+    if (!model || !prompt.trim()) return;
+    const size = shape && model.limits.sizes[shape];
+    const num = (v: string) => (v === "" ? undefined : Number(v));
+    send(
+      {
+        prompt: prompt.trim(),
+        model: modelId,
+        style: styleId || undefined,
+        size: size ? `${size[0]}x${size[1]}` : undefined,
+        quality: quality || undefined,
+        seed: num(seed),
+        steps: num(steps),
+        cfg: num(cfg),
+        negative_prompt: negative.trim() || undefined,
+      },
+      model,
+      style?.name ?? "",
+      shape,
+    );
+    setPrompt("");
+  };
+  // Desktop: Enter sends, Shift+Enter is a new line. On a phone the keyboard's return is a new line.
+  const onKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (!phone && e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+      e.preventDefault();
+      submit();
+    }
+  };
+  // The box grows with the prompt up to its max height, then scrolls.
+  useEffect(() => {
+    const el = box.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [prompt]);
+
+  const again = (t: Turn) => {
+    const m = models.find((x) => x.id === t.body.model);
+    if (!m) return setError(`${t.modelName} isn't available any more.`);
+    send({ ...t.body, seed: undefined }, m, t.styleName, t.shape);
+  };
+  const edit = (t: Turn) => {
+    setPrompt(t.body.prompt);
+    if (models.some((m) => m.id === t.body.model)) setModelId(t.body.model);
+    setStyleId(t.body.style ?? "");
+    setShape(t.shape);
+    box.current?.focus();
+  };
+  const cancel = (id: string) => api(`/api/v1/jobs/${id}`, { method: "DELETE" }).catch((e) => setError(e.message));
+  const clear = () =>
+    confirm
+      .ask({ title: "Start a new chat?", body: "This chat and its images are only kept in this browser. Save any you want first.", action: "Clear chat" })
+      .then((ok) => {
+        if (!ok) return;
+        store("readwrite", (s) => s.clear()).catch(() => {});
+        kept.current.clear();
+        setTurns((all) => all.filter((t) => !finished(t)));
+      });
 
   return (
-    <>
-      <h1>Generate</h1>
-      <form className="card form" onSubmit={submit}>
-        <label>
-          Prompt
-          <textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} rows={3} required maxLength={4000} />
-        </label>
-        <fieldset className="chips">
-          <legend>Style</legend>
-          {[{ id: "", name: "None" }, ...usable].map((s) => (
-            <label key={s.id || "none"} className="chip">
-              <input type="radio" name="style" checked={styleId === s.id} onChange={() => setStyleId(s.id)} />
-              {s.name}
-            </label>
-          ))}
-        </fieldset>
-        <div className="split">
-          <label>
-            Model
-            <select value={modelId} onChange={(e) => pickModel(e.target.value)}>
-              {models.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.name}
-                  {m.cloud ? " (cloud, may use credits)" : ""}
-                </option>
-              ))}
-            </select>
-          </label>
-          {qualities.length > 0 && (
-            <label>
-              Quality
-              <select value={quality} onChange={(e) => setQuality(e.target.value as Quality | "")}>
-                <option value="">Default</option>
-                {qualities.map((q) => (
-                  <option key={q} value={q}>
-                    {QUALITY[q]}
-                  </option>
-                ))}
-              </select>
-            </label>
-          )}
-          <label>
-            Shape
-            <select value={shape} onChange={(e) => setShape(e.target.value)}>
-              <option value="">Default</option>
-              {model &&
-                Object.entries(model.limits.sizes).map(([name, [w, h]]) => (
-                  <option key={name} value={name}>
-                    {name} ({w}×{h})
-                  </option>
-                ))}
-            </select>
-          </label>
-          {model?.limits.supports_seed && (
-            <label>
-              Variation number (blank for random)
-              <input type="number" min={0} value={seed} onChange={(e) => setSeed(e.target.value)} />
-            </label>
-          )}
+    <div className={phone ? "chat phone-chat" : "chat"}>
+      <h1 className="sr-only">Generate</h1>
+      {confirm.dialog}
+      {turns.length > 0 && (
+        <div className="chat-top">
+          <button type="button" className="ghost small" onClick={clear}>
+            <Icon name="newchat" size={16} />
+            New chat
+          </button>
         </div>
-        {model && (model.limits.steps || model.limits.cfg || model.limits.supports_negative) && (
-          <details className="advanced">
-            <summary>Advanced</summary>
-            <div className="split">
-              {model.limits.steps && (
-                <label>
-                  Steps ({minSteps}–{maxSteps})
-                  <input
-                    type="number"
-                    min={minSteps}
-                    max={maxSteps}
-                    value={steps}
-                    placeholder={`Auto (${preset?.steps ?? model.defaults.steps ?? "model's"})`}
-                    onChange={(e) => setSteps(e.target.value)}
-                  />
-                </label>
-              )}
-              {model.limits.cfg && (
-                <label>
-                  CFG ({minCfg}–{maxCfg})
-                  <input
-                    type="number"
-                    min={minCfg}
-                    max={maxCfg}
-                    step={0.1}
-                    value={cfg}
-                    placeholder={`Auto (${preset?.cfg ?? model.defaults.cfg ?? "model's"})`}
-                    onChange={(e) => setCfg(e.target.value)}
-                  />
-                </label>
+      )}
+
+      <div className="chat-log" aria-live="polite">
+        {turns.length === 0 ? (
+          <div className="hello">
+            <p className="hello-title">What should we make?</p>
+            <p className="muted">Describe an image. Each message makes a new one, on this computer.</p>
+            <div className="examples">
+              {EXAMPLES.map((x) => (
+                <button key={x} type="button" className="example" onClick={() => (setPrompt(x), box.current?.focus())}>
+                  {x}
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : (
+          turns.map((t) => <TurnView key={t.id} t={t} onCancel={cancel} onAgain={again} onEdit={edit} onFull={setFull} />)
+        )}
+      </div>
+
+      <form className="dock" onSubmit={submit}>
+        {error && <Alert>{error}</Alert>}
+        <div className="composer" ref={composer}>
+          <div className={panel === "style" ? "drawer open" : "drawer"} inert={panel !== "style"}>
+            <div>
+              <StyleTiles
+                styles={usable}
+                value={styleId}
+                onChange={(id) => (setStyleId(id), setPanel(""), phone || box.current?.focus())}
+                onEdit={(s) => setEditing({ style: s, fresh: false })}
+                onNew={() => setEditing({ style: copyOf(BLANK, "New style", styles), fresh: true })}
+              />
+            </div>
+          </div>
+          <div className={panel === "more" ? "drawer open" : "drawer"} inert={panel !== "more"}>
+            <div>
+              {model && (
+                <div className="more-panel form">
+                  <div className="two">
+                    {models.length > 1 && (
+                      <label>
+                        Model
+                        <select value={modelId} onChange={(e) => pickModel(e.target.value)}>
+                          {models.map((m) => (
+                            <option key={m.id} value={m.id}>
+                              {m.name}
+                              {m.cloud ? " (cloud, may use credits)" : ""}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    )}
+                    {qualities.length > 0 && (
+                      <label>
+                        Quality
+                        <select value={quality} onChange={(e) => setQuality(e.target.value as Quality | "")}>
+                          <option value="">Default</option>
+                          {qualities.map((q) => (
+                            <option key={q} value={q}>
+                              {QUALITY[q]}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    )}
+                    {model.limits.supports_seed && (
+                      <label>
+                        Variation number
+                        <input type="number" min={0} value={seed} placeholder="Random" onChange={(e) => setSeed(e.target.value)} />
+                      </label>
+                    )}
+                    {model.limits.steps && (
+                      <label>
+                        Steps ({minSteps}–{maxSteps})
+                        <input
+                          type="number"
+                          min={minSteps}
+                          max={maxSteps}
+                          value={steps}
+                          placeholder={`Auto (${preset?.steps ?? model.defaults.steps ?? "model's"})`}
+                          onChange={(e) => setSteps(e.target.value)}
+                        />
+                      </label>
+                    )}
+                    {model.limits.cfg && (
+                      <label>
+                        CFG ({minCfg}–{maxCfg})
+                        <input
+                          type="number"
+                          min={minCfg}
+                          max={maxCfg}
+                          step={0.1}
+                          value={cfg}
+                          placeholder={`Auto (${preset?.cfg ?? model.defaults.cfg ?? "model's"})`}
+                          onChange={(e) => setCfg(e.target.value)}
+                        />
+                      </label>
+                    )}
+                  </div>
+                  {model.limits.supports_negative && (
+                    <label>
+                      Negative prompt
+                      <textarea value={negative} onChange={(e) => setNegative(e.target.value)} rows={2} maxLength={4000} />
+                      <span className="help">Added to the model's and the style's, never replacing them</span>
+                    </label>
+                  )}
+                </div>
               )}
             </div>
-            {model.limits.supports_negative && (
-              <label>
-                Negative prompt (added to the model's and the style's)
-                <textarea value={negative} onChange={(e) => setNegative(e.target.value)} rows={2} maxLength={4000} />
+          </div>
+          <textarea
+            ref={box}
+            className="prompt"
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            onKeyDown={onKey}
+            rows={1}
+            maxLength={4000}
+            aria-label="Describe the image"
+            placeholder={style ? `Describe the image · ${style.name}` : "Describe the image"}
+          />
+          <div className="composer-row">
+            <button type="button" className={panel === "style" ? "pill on" : "pill"} aria-expanded={panel === "style"} aria-label={`Style: ${style?.name ?? "None"}`} onClick={() => setPanel(panel === "style" ? "" : "style")}>
+              {style && thumbOf(style) ? <img className="pill-art" src={thumbOf(style)} alt="" /> : <Icon name={style ? iconOr(style.icon) : "palette"} size={16} />}
+              <span className="pill-name">{style?.name ?? "Style"}</span>
+              <Icon name="chevron" size={14} className="chev" />
+            </button>
+            {model && (
+              <label className="pill">
+                <Icon name="square" size={16} />
+                <span className="sr-only">Shape</span>
+                <select value={shape} onChange={(e) => setShape(e.target.value)}>
+                  <option value="">{style?.overrides.shape ? `Style's (${style.overrides.shape})` : "Default shape"}</option>
+                  {Object.entries(model.limits.sizes).map(([name, [w, h]]) => (
+                    <option key={name} value={name}>
+                      {name[0].toUpperCase() + name.slice(1)} · {w}×{h}
+                    </option>
+                  ))}
+                </select>
               </label>
             )}
-          </details>
-        )}
-        {error && <p className="error" role="alert">{error}</p>}
-        <div className="actions">
-          <button className="primary" type="submit" disabled={!model || !prompt.trim()}>
-            Generate
-          </button>
+            <button type="button" className={panel === "more" ? "pill on" : "pill"} aria-expanded={panel === "more"} aria-label="More settings" onClick={() => setPanel(panel === "more" ? "" : "more")}>
+              <Icon name="sliders" size={16} />
+              <span className="pill-name">More</span>
+            </button>
+            <button type="submit" className="send" aria-label="Generate" disabled={!model || !prompt.trim()}>
+              <Icon name="up" size={20} />
+            </button>
+          </div>
         </div>
       </form>
 
-      {results.length > 0 && (
-        <div className="gallery">
-          {results.map((r) => (
-            <section key={r.id} className="card shot">
-              {r.data?.map((d, i) =>
-                d.b64_json ? <img key={i} src={`data:image/png;base64,${d.b64_json}`} alt={r.prompt} /> : null,
-              )}
-              {r.status === "running" && <progress value={r.progress} max={1} aria-label="Progress" />}
-              <p className="lead">{r.prompt}</p>
-              <p className="muted" role="status">
-                {r.model}
-                {r.style && ` · ${r.style}`}
-                {r.status === "queued" && ` · waiting${r.queue_position ? ` (#${r.queue_position})` : ""}`}
-                {r.status === "running" && " · running"}
-                {r.status === "done" && ` · ${secs(r.elapsed_ms)}`}
-                {r.seed != null && ` · variation ${r.seed}`}
-                {r.status === "cancelled" && " · cancelled"}
-              </p>
-              {r.error && <p className="error">{r.error.message}</p>}
-              {r.data?.map((d, i) =>
-                d.b64_json ? (
-                  <a key={i} className="save" href={`data:image/png;base64,${d.b64_json}`} download={`glint-${r.seed ?? r.id}-${i + 1}.png`}>
-                    Save image{r.data!.length > 1 ? ` ${i + 1}` : ""}
-                  </a>
-                ) : null,
-              )}
-              {!finished(r) && (
-                <button onClick={() => api(`/api/v1/jobs/${r.id}`, { method: "DELETE" }).catch((e) => setError(e.message))}>
-                  Cancel
-                </button>
-              )}
-            </section>
-          ))}
-        </div>
+      {editing && (
+        <StyleEditor
+          start={editing.style}
+          fresh={editing.fresh}
+          styles={styles}
+          reload={loadStyles}
+          onSaved={setStyleId}
+          onClose={() => setEditing(null)}
+        />
       )}
-    </>
+      {full?.image && <Lightbox t={full} onClose={() => setFull(null)} />}
+    </div>
+  );
+}
+
+// Sample art only for a built-in style as shipped; an edited one may not look like it any more.
+const thumbOf = (s: Listed) => (s.builtin && !s.edited ? sampleOf(s.id) : undefined);
+
+/** The grid of style tiles: None, every style, then "+". Hover a tile for its pencil, or long-press it on a phone. */
+function StyleTiles({
+  styles,
+  value,
+  onChange,
+  onEdit,
+  onNew,
+}: {
+  styles: Listed[];
+  value: string;
+  onChange: (id: string) => void;
+  onEdit: (s: Listed) => void;
+  onNew: () => void;
+}) {
+  const timer = useRef(0);
+  const held = useRef(false);
+  const press = (s: Listed) => ({
+    onPointerDown: (e: React.PointerEvent) => {
+      if (e.pointerType !== "touch") return;
+      held.current = false;
+      timer.current = window.setTimeout(() => ((held.current = true), onEdit(s)), 500);
+    },
+    onPointerUp: () => clearTimeout(timer.current),
+    onPointerLeave: () => clearTimeout(timer.current),
+    onPointerCancel: () => clearTimeout(timer.current),
+    onContextMenu: (e: React.MouseEvent) => e.preventDefault(),
+  });
+  return (
+    <div className="style-grid" role="radiogroup" aria-label="Style">
+      <div className="style-tile">
+        <button type="button" role="radio" aria-checked={value === ""} onClick={() => onChange("")}>
+          <span className="art none">
+            <Icon name="ban" size={22} />
+          </span>
+          <span className="name">None</span>
+        </button>
+      </div>
+      {styles.map((s) => {
+        const img = thumbOf(s);
+        return (
+          <div key={s.id} className="style-tile">
+            <button
+              type="button"
+              role="radio"
+              aria-checked={value === s.id}
+              onClick={() => (held.current ? (held.current = false) : onChange(s.id))}
+              {...press(s)}
+            >
+              <span className={img ? "art" : "art mine"}>
+                {img ? <img src={img} alt="" draggable={false} /> : <Icon name={iconOr(s.icon)} size={22} />}
+              </span>
+              <span className="name">{s.name}</span>
+            </button>
+            <button type="button" className="tile-edit" aria-label={`Edit ${s.name}`} onClick={() => onEdit(s)}>
+              <Icon name="pencil" size={14} />
+            </button>
+          </div>
+        );
+      })}
+      <div className="style-tile">
+        <button type="button" onClick={onNew}>
+          <span className="art add">
+            <Icon name="plus" size={22} />
+          </span>
+          <span className="name">New style</span>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** One prompt (right) and its image forming in place (left). */
+function TurnView({
+  t,
+  onCancel,
+  onAgain,
+  onEdit,
+  onFull,
+}: {
+  t: Turn;
+  onCancel: (id: string) => void;
+  onAgain: (t: Turn) => void;
+  onEdit: (t: Turn) => void;
+  onFull: (t: Turn) => void;
+}) {
+  const tags = [t.styleName, t.shape].filter(Boolean);
+  const frame = { aspectRatio: `${t.w} / ${t.h}`, "--ratio": t.w / t.h, "--p": t.progress } as CSSProperties;
+  const label =
+    t.status === "queued"
+      ? t.queue_position
+        ? `Waiting · ${t.queue_position} ahead`
+        : "Waiting"
+      : t.progress > 0
+        ? `Generating · ${Math.round(t.progress * 100)}%`
+        : "Starting the engine…";
+  return (
+    <article className="turn">
+      <div className="you">
+        <p>{t.body.prompt}</p>
+        {tags.length > 0 && (
+          <div className="you-tags">
+            {tags.map((x) => (
+              <span key={x} className="tag">
+                {x}
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+      <div className="reply">
+        {t.status === "done" && t.image ? (
+          <>
+            <button type="button" className="shot done" style={frame} onClick={() => onFull(t)} aria-label="Open full screen">
+              <img src={`data:image/png;base64,${t.image}`} alt={t.body.prompt} />
+            </button>
+            <div className="reply-bar">
+              <a className="button icon" href={`data:image/png;base64,${t.image}`} download={`glint-${t.seed ?? t.id}-1.png`} aria-label="Download" title="Download">
+                <Icon name="download" />
+              </a>
+              <button type="button" className="icon" aria-label="Try again with a new variation" title="Try again" onClick={() => onAgain(t)}>
+                <Icon name="refresh" />
+              </button>
+              <button type="button" className="icon" aria-label="Edit this prompt" title="Edit prompt" onClick={() => onEdit(t)}>
+                <Icon name="pencil" />
+              </button>
+              <button type="button" className="icon" aria-label="Full screen" title="Full screen" onClick={() => onFull(t)}>
+                <Icon name="maximize" />
+              </button>
+              <span className="muted small num">{[t.modelName, secs(t.elapsed_ms), t.seed != null && `variation ${t.seed}`].filter(Boolean).join(" · ")}</span>
+            </div>
+          </>
+        ) : finished(t) ? (
+          <div className="reply-note">
+            <Icon name={t.status === "failed" ? "error" : "x"} size={16} />
+            <span>{t.status === "failed" ? t.error?.message ?? "This one failed." : "Cancelled."}</span>
+            <button type="button" className="ghost small" onClick={() => onAgain(t)}>
+              Try again
+            </button>
+          </div>
+        ) : (
+          <div className="shot forming" style={frame} role="status">
+            {t.preview && <img className="preview" src={`data:image/jpeg;base64,${t.preview}`} alt="" />}
+            <span className="shimmer" aria-hidden="true" />
+            <div className="forming-bar">
+              <span className="num">{label}</span>
+              <button type="button" className="ghost small" onClick={() => onCancel(t.id)}>
+                Cancel
+              </button>
+              <span className="forming-track" aria-hidden="true">
+                <span style={{ transform: `scaleX(${t.progress})` }} />
+              </span>
+            </div>
+          </div>
+        )}
+      </div>
+    </article>
+  );
+}
+
+/** The image on its own, as large as the screen allows. Esc or a click closes it. */
+function Lightbox({ t, onClose }: { t: Turn; onClose: () => void }) {
+  const ref = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const d = ref.current;
+    if (d && !d.open) d.showModal();
+  }, []);
+  return (
+    <dialog ref={ref} className="lightbox" aria-label={t.body.prompt} onClose={onClose} onClick={() => ref.current?.close()}>
+      <img src={`data:image/png;base64,${t.image}`} alt={t.body.prompt} />
+      <button type="button" className="icon" aria-label="Close" autoFocus>
+        <Icon name="x" />
+      </button>
+    </dialog>
   );
 }

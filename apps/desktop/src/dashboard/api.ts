@@ -80,6 +80,7 @@ export type JobEvent = {
   created: number;
   elapsed_ms: number | null;
   error: { code: string; message: string } | null;
+  preview?: string; // "preview" events only: a base64 JPEG of the image so far
 };
 
 export type Stats = {
@@ -90,10 +91,25 @@ export type Stats = {
   styles: { style: string; count: number }[];
 };
 
-export type Hardware = { backend: string; vram_budget_gb: number; ram_gb: number; disk_free_gb: number; gpus?: { name: string }[] };
+// Mirror the app's scan (scan.rs), plus free disk measured by the host.
+export type Hardware = {
+  backend: string;
+  vram_budget_gb: number;
+  ram_gb: number;
+  disk_free_gb: number;
+  cpu?: string;
+  gpus?: { vendor?: string; name: string; vram_gb?: number | null }[];
+  warnings?: string[];
+};
 
 export type System = {
-  engine: { up: boolean; error: string | null; devices: { name: string; type: string; vram_total: number; vram_free: number }[] };
+  engine: {
+    up: boolean;
+    error: string | null;
+    devices: { name: string; type: string; vram_total: number; vram_free: number }[];
+    // Mirrors Engine.view() in host/app/engine.py: the model kept in memory.
+    model: { status: "idle" | "loading" | "loaded" | "failed"; model: string | null; error: string | null };
+  };
   queue: { running: number; queued: number };
   hardware: Hardware;
   models_bytes: number;

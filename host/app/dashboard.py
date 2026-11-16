@@ -32,6 +32,7 @@ from app.local_models import (
     recommend,
     variant_installed,
 )
+from app.model_folders import candidates, count_models, model_roots, normalize, read_settings, save_settings
 from app.stats import Stats
 
 COOKIE = "glint_session"
@@ -145,6 +146,11 @@ def _models_dir(request: Request) -> Path:
     return request.app.state.settings.models_dir or Path("models")
 
 
+def _roots(request: Request) -> list[Path]:
+    cfg = request.app.state.settings
+    return model_roots(cfg.models_dir, cfg.engine_file)
+
+
 def _local_model(request: Request, model_id: str) -> CatalogModel:
     model = request.app.state.models.get(model_id)
     if model is None or not model.variants:
@@ -158,7 +164,8 @@ async def local_models(request: Request) -> dict:
     models_dir = _models_dir(request)
     hw = await asyncio.to_thread(load_hardware, request.app.state.settings.hardware_file, models_dir)
     downloads: Downloads = request.app.state.downloads
-    rows = recommend(hw, list(request.app.state.models.values()), lambda v: variant_installed(models_dir, v))
+    roots = await asyncio.to_thread(_roots, request)
+    rows = recommend(hw, list(request.app.state.models.values()), lambda v: variant_installed(roots, v))
     for row in rows:
         row["download"] = downloads.view(row["id"])
     return {"hardware": hw, "models": rows}
@@ -214,7 +221,7 @@ async def system(request: Request) -> dict:
         lambda: sum(p.stat().st_size for p in models_dir.rglob("*") if p.is_file())
     )
     return {
-        "engine": {"up": engine_up, "error": engine_error, "devices": devices},
+        "engine": {"up": engine_up, "error": engine_error, "devices": devices, "model": request.app.state.engine.view()},
         "queue": {
             "running": sum(j.status == "running" for j in jobs),
             "queued": sum(j.status == "queued" for j in jobs),
@@ -222,6 +229,77 @@ async def system(request: Request) -> dict:
         "hardware": hw,
         "models_bytes": models_bytes,
     }
+
+
+# --- the model in memory, and model folders linked from another ComfyUI ---
+
+class LoadRequest(BaseModel):
+    model: str | None = None  # None: the default model, or the first one downloaded
+
+
+@router.post("/api/v1/engine/load", status_code=202, dependencies=[Depends(require_main_key)])
+async def load_model(request: Request, body: LoadRequest | None = None) -> dict:
+    engine = request.app.state.engine
+    engine.load(body.model if body else None)
+    return engine.view()
+
+
+@router.post("/api/v1/engine/unload", dependencies=[Depends(require_main_key)])
+async def unload_model(request: Request) -> dict:
+    engine = request.app.state.engine
+    await engine.unload()
+    return engine.view()
+
+
+class EngineSettings(BaseModel):
+    preload: bool | None = None
+    folders: list[str] | None = None
+
+
+def _engine_file(request: Request) -> Path:
+    path = request.app.state.settings.engine_file
+    if path is None:
+        raise ApiError("not_found", "Model folders are set up by the Glint Studio app; this host runs on its own.")
+    return path
+
+
+@router.get("/api/v1/engine/settings", dependencies=[Depends(require_main_key), Depends(local_only)])
+async def engine_settings(request: Request) -> dict:
+    """The preload switch, linked folders, and ComfyUI folders found on this computer."""
+    current = read_settings(_engine_file(request))
+    own = str((request.app.state.settings.models_dir or Path("models")).resolve())
+
+    def view(f: str) -> dict:
+        return {"path": f, "models": count_models(Path(f)), "exists": Path(f).is_dir()}
+
+    def scan() -> dict:
+        found = [f for f in candidates() if f != own and f not in current["folders"]]
+        return {"preload": current["preload"], "folders": [view(f) for f in current["folders"]], "found": [view(f) for f in found]}
+
+    return await asyncio.to_thread(scan)
+
+
+@router.put("/api/v1/engine/settings", dependencies=[Depends(require_main_key), Depends(local_only)])
+async def set_engine_settings(body: EngineSettings, request: Request) -> dict:
+    """Changed only from this computer. New folders restart the engine, so not mid-job."""
+    path = _engine_file(request)
+    current = read_settings(path)
+    folders = current["folders"]
+    if body.folders is not None:
+        folders = []
+        for raw in body.folders:
+            folder = await asyncio.to_thread(normalize, raw)
+            if folder is None:
+                raise ApiError("bad_params", f"There's no folder at {raw}.")
+            if str(folder) not in folders:
+                folders.append(str(folder))
+        if folders != current["folders"] and any(
+            j.status in ("queued", "running") for j in request.app.state.jobs.jobs.values()
+        ):
+            raise ApiError("bad_params", "Wait for the images in progress to finish; this restarts the engine.")
+    preload = current["preload"] if body.preload is None else body.preload
+    await asyncio.to_thread(save_settings, path, preload, folders)
+    return await engine_settings(request)
 
 
 # --- sharing on the network and the public link; the desktop app does the work ---
@@ -326,3 +404,34 @@ async def delete_key(key_id: str, request: Request) -> None:
 def _key_view(key: Key, usage: dict) -> dict:
     made, last = usage.get(key.id, (0, None))
     return {**key.model_dump(exclude={"hash"}), "used_24h": made, "last_used": int(last) if last else None}
+
+
+# --- the app's process logs, read-only; names from a fixed list, never a path from the request ---
+
+LOG_FILES = {"host": "host.log", "comfyui": "comfyui.log", "tunnel": "tunnel.log"}
+LOG_TAIL_BYTES = 512 * 1024
+
+
+def _tail(path: Path, lines: int) -> list[str]:
+    with path.open("rb") as f:
+        size = f.seek(0, os.SEEK_END)
+        f.seek(max(0, size - LOG_TAIL_BYTES))
+        text = f.read().decode("utf-8", errors="replace")
+    if size > LOG_TAIL_BYTES:
+        text = text.split("\n", 1)[-1]  # drop the line the cut landed in
+    return text.splitlines()[-lines:]
+
+
+@router.get("/api/v1/logs", dependencies=[Depends(require_main_key), Depends(local_only)])
+async def logs(
+    request: Request, file: str = Query(default="host"), lines: int = Query(default=500, ge=1, le=5000)
+) -> dict:
+    """The end of one of the app's logs. Only from this computer: logs can hold prompts and addresses."""
+    logs_dir: Path | None = request.app.state.settings.logs_dir
+    if logs_dir is None:
+        raise ApiError("not_found", "Logs are kept by the Glint Studio app; this host runs on its own.")
+    if file not in LOG_FILES:
+        raise ApiError("bad_params", f"No log '{file}'. Pick one of: {', '.join(LOG_FILES)}.")
+    files = [name for name, fname in LOG_FILES.items() if (logs_dir / fname).is_file()]
+    path = logs_dir / LOG_FILES[file]
+    return {"files": files, "file": file, "lines": await asyncio.to_thread(_tail, path, lines) if path.is_file() else []}

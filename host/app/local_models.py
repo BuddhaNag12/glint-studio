@@ -20,6 +20,7 @@ import httpx
 
 from app.catalog import CatalogModel, Variant
 from app.errors import ApiError
+from app.model_folders import file_present
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +71,7 @@ def recommend_one(hw: dict, model: CatalogModel, installed: bool) -> dict:
         "fit": fit,
         "reason": reason,
         "precision": variant.precision,
+        "min_vram_gb": variant.min_vram_gb,
         "bytes": size,
         "installed": installed,
     }
@@ -87,11 +89,14 @@ def chosen_variant(hw: dict, model: CatalogModel) -> Variant | None:
     return _pick(hw, model)[0] if model.variants else None
 
 
-def variant_installed(models_dir: Path, variant: Variant) -> bool:
-    """Present at full size. The download checks the sha256 before the rename, so full size = verified."""
-    return all(
-        (p := models_dir / f.dest).is_file() and p.stat().st_size == f.bytes for f in variant.files
-    )
+def variant_installed(roots: list[Path], variant: Variant) -> bool:
+    """Every file at full size in the models folder or a linked one. Downloads check the sha256
+    before the rename, so full size = verified; a linked folder's files are taken on name and size."""
+    return all(file_present(roots, f.dest, f.bytes) for f in variant.files)
+
+
+def model_installed(roots: list[Path], model: CatalogModel) -> bool:
+    return any(variant_installed(roots, v) for v in model.variants)
 
 
 def load_hardware(hardware_file: Path | None, models_dir: Path) -> dict:

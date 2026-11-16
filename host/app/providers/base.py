@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from app.catalog import CatalogModel, ResolvedParams
-from app.comfy_client import ComfyImageOutput, ProgressFn
+from app.comfy_client import ComfyImageOutput, PreviewFn, ProgressFn
 from app.styles import ComposedPrompt
 
 
@@ -33,4 +33,6 @@ class Provider(Protocol):
 
     async def health(self) -> None: ...
 
-    async def generate(self, request: ProviderRequest, on_progress: ProgressFn | None = None) -> ProviderResult: ...
+    async def generate(
+        self, request: ProviderRequest, on_progress: ProgressFn | None = None, on_preview: PreviewFn | None = None
+    ) -> ProviderResult: ...

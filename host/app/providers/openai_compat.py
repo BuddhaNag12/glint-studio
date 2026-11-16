@@ -17,7 +17,7 @@ from dotenv import dotenv_values
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.catalog import ID_PATTERN, CatalogModel
-from app.comfy_client import ComfyImageOutput, ProgressFn
+from app.comfy_client import ComfyImageOutput, PreviewFn, ProgressFn
 from app.errors import ApiError
 from app.providers.base import ProviderRequest, ProviderResult
 
@@ -129,7 +129,9 @@ class OpenAICompatProvider:
             raise ApiError("provider_down", f"Can't reach {name}: {exc}") from exc
         _raise_for_status(res, name)
 
-    async def generate(self, request: ProviderRequest, on_progress: ProgressFn | None = None) -> ProviderResult:
+    async def generate(
+        self, request: ProviderRequest, on_progress: ProgressFn | None = None, on_preview: PreviewFn | None = None
+    ) -> ProviderResult:
         # These APIs report no progress; cancelling the task drops the HTTP request.
         model, p = request.model, request.params
         if self.config.api_key_env and not self._key:

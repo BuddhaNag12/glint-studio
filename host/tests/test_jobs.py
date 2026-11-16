@@ -28,7 +28,7 @@ def _queue(**kw) -> JobQueue:
 
 
 def _runner(gate: asyncio.Event | None = None, log: list | None = None, name: str = ""):
-    async def run(on_progress):
+    async def run(on_progress, on_preview):
         if log is not None:
             log.append(name)
         on_progress(0.5)
@@ -91,13 +91,15 @@ async def test_events_and_unexpected_errors() -> None:
     q = _queue()
     listener = q.subscribe()
 
-    async def boom(on_progress):
+    async def boom(on_progress, on_preview):
+        on_preview(b"jpeg")
         raise RuntimeError("disk full")
 
     job = _submit(q, boom)
     await job.done.wait()
-    events = [listener.get_nowait()["event"] for _ in range(listener.qsize())]
-    assert events == ["queued", "started", "failed"]
+    events = [listener.get_nowait() for _ in range(listener.qsize())]
+    assert [e["event"] for e in events] == ["queued", "started", "preview", "failed"]
+    assert events[2]["preview"] == "anBlZw==" and "preview" not in events[3]  # only on its own event
     assert q.view(job)["error"] == {"code": "workflow_failed", "message": "disk full"}
     with pytest.raises(RuntimeError):  # sync callers get the original exception
         await q.wait(job)

@@ -320,3 +320,22 @@ def test_stats_and_system(tmp_path: Path) -> None:
 
 def test_settings_parse_allowed_hosts() -> None:
     assert Settings(allowed_hosts="127.0.0.1, localhost").allowed_hosts == ["127.0.0.1", "localhost"]
+
+
+def test_logs_show_the_end_of_a_known_log_only(tmp_path: Path, monkeypatch) -> None:
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    (logs / "host.log").write_text("".join(f"INFO:     line {i}\n" for i in range(100)))
+    (tmp_path / "secret.log").write_text("nope")
+    app, _, _ = _setup_test_app(tmp_path, logs_dir=logs)
+    with TestClient(app, client=LOCAL) as client:
+        res = client.get("/api/v1/logs?lines=3", headers=AUTH).json()
+        assert res == {"files": ["host"], "file": "host", "lines": [f"INFO:     line {i}" for i in (97, 98, 99)]}
+        assert client.get("/api/v1/logs?file=comfyui", headers=AUTH).json()["lines"] == []
+        assert client.get("/api/v1/logs?file=../secret", headers=AUTH).status_code == 422
+        assert client.get("/api/v1/logs").status_code == 401
+        lan = TestClient(app, client=("192.168.1.20", 50000))
+        assert lan.get("/api/v1/logs", headers=AUTH).status_code == 400
+        # A big log is read from its end, and the cut-off first line is dropped.
+        monkeypatch.setattr("app.dashboard.LOG_TAIL_BYTES", 40)
+        assert client.get("/api/v1/logs", headers=AUTH).json()["lines"] == ["INFO:     line 98", "INFO:     line 99"]

@@ -42,10 +42,12 @@ from app.comfy_client import ComfyClient, ComfyImageOutput, infer_mime_and_ext
 from app.config import Settings
 from app.dashboard import Sessions
 from app.dashboard import router as dashboard_router
+from app.engine import Engine
 from app.errors import ApiError, api_error_handler
 from app.jobs import Job, JobQueue
 from app.keys import Keys
 from app.local_models import Downloads
+from app.model_folders import model_roots, read_settings
 from app.naming import extract_image_title, safe_header_value, title_to_filename_slug
 from app.providers.base import ProviderRequest
 from app.providers.comfyui import ComfyUIProvider
@@ -188,21 +190,37 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 **remote_providers,
             }
             app.state.stats = Stats(resolved_settings.stats_db)
+            engine_file = resolved_settings.engine_file
+            app.state.engine = Engine(
+                app.state.providers["comfyui"],
+                app.state.models,
+                roots=lambda: model_roots(resolved_settings.models_dir, engine_file),
+                preload=lambda: read_settings(engine_file)["preload"],
+                default_model=DEFAULT_MODEL,
+            )
+
+            def on_finish(job: Job) -> None:
+                app.state.stats.record(job)
+                app.state.engine.finished(job)
+
             app.state.jobs = JobQueue(
                 max_concurrent=resolved_settings.max_concurrent_jobs,
                 queue_timeout_seconds=resolved_settings.queue_timeout_seconds,
                 run_timeout_seconds=resolved_settings.request_timeout_seconds,
                 keep_seconds=resolved_settings.image_url_ttl_seconds,  # finished jobs live as long as their URLs
-                on_finish=app.state.stats.record,
+                on_finish=on_finish,
             )
             app.state.keys = Keys(resolved_settings.keys_file, resolved_settings.api_key)
             app.state.sessions = Sessions(resolved_settings.api_key.strip())
             # Downloads get their own client: no overall timeout on a 20 GB file.
             async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0)) as download_client:
                 app.state.downloads = Downloads(download_client, resolved_settings.models_dir or Path("models"))
+                watcher = asyncio.create_task(app.state.engine.watch())
                 try:
                     yield
                 finally:
+                    watcher.cancel()
+                    await app.state.engine.close()
                     await app.state.downloads.cancel()
                     await app.state.jobs.shutdown()
                     app.state.stats.db.close()
@@ -357,7 +375,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if made + waiting >= key.daily_cap:
                 raise ApiError("daily_cap", f"This key's limit is {key.daily_cap} images a day. Try again later.")
         return jobs.submit(
-            lambda on_progress: provider.generate(job, on_progress),
+            lambda on_progress, on_preview: provider.generate(job, on_progress, on_preview),
             model=job.model.id,
             prompt=user_prompt,
             response_format=response_format,
@@ -523,7 +541,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 # The user's own workflow from WORKFLOWS_DIR, run as-is with no catalog or style.
                 workflow_template, mapping = load_workflow_bundle(cfg.workflows_dir, body.workflow)
                 job = jobs.submit(
-                    lambda on_progress: comfy.run_workflow(workflow_template, mapping, body, on_progress),
+                    lambda on_progress, on_preview: comfy.run_workflow(workflow_template, mapping, body, on_progress, on_preview),
                     model=body.workflow,
                     prompt=body.prompt,
                     response_format="legacy",

@@ -19,6 +19,8 @@ logger = logging.getLogger(__name__)
 
 # Called with 0..1 as the sampler steps through.
 ProgressFn = Callable[[float], None]
+# Called with each JPEG/PNG the engine sends while sampling (needs --preview-method on ComfyUI).
+PreviewFn = Callable[[bytes], None]
 
 
 class ComfyConnectionError(RuntimeError):
@@ -157,18 +159,29 @@ class ComfyClient:
         except (httpx.HTTPError, OSError, ValueError) as exc:
             raise ComfyConnectionError(f"ComfyUI health check failed: {exc}") from exc
 
+    async def free(self) -> None:
+        """Unload every model from memory (POST /free); the next prompt loads them again."""
+        try:
+            response = await self.http_client.post(
+                f"{self.http_url}/free", json={"unload_models": True, "free_memory": True}, timeout=10.0
+            )
+            response.raise_for_status()
+        except (httpx.HTTPError, OSError) as exc:
+            raise ComfyConnectionError(f"ComfyUI couldn't unload: {exc}") from exc
+
     async def generate_images(
         self,
         workflow: dict[str, Any],
         output_node_id: str | None = None,
         timeout_seconds: float = 120.0,
         on_progress: ProgressFn | None = None,
+        on_preview: PreviewFn | None = None,
     ) -> tuple[str, list[ComfyImageOutput]]:
         """Submit a workflow, wait via WebSocket for completion, and download output images.
         If the caller is cancelled (or times out), the prompt is stopped in ComfyUI too."""
         try:
             return await asyncio.wait_for(
-                self._run_generation(workflow, output_node_id, on_progress),
+                self._run_generation(workflow, output_node_id, on_progress, on_preview),
                 timeout=timeout_seconds,
             )
         except asyncio.TimeoutError as exc:
@@ -181,6 +194,7 @@ class ComfyClient:
         workflow: dict[str, Any],
         output_node_id: str | None,
         on_progress: ProgressFn | None = None,
+        on_preview: PreviewFn | None = None,
     ) -> tuple[str, list[ComfyImageOutput]]:
         client_id = uuid.uuid4().hex
         ws_endpoint = f"{self.ws_url}/ws?clientId={client_id}"
@@ -189,7 +203,7 @@ class ComfyClient:
         try:
             async with websockets.connect(ws_endpoint, max_size=None) as ws:
                 prompt_id = await self._queue_prompt(workflow, client_id)
-                ws_images = await self._wait_for_completion(ws, prompt_id, output_node_id, on_progress)
+                ws_images = await self._wait_for_completion(ws, prompt_id, output_node_id, on_progress, on_preview)
         except asyncio.CancelledError:
             if prompt_id is not None:
                 await self.interrupt(prompt_id)
@@ -246,6 +260,7 @@ class ComfyClient:
         prompt_id: str,
         output_node_id: str | None = None,
         on_progress: ProgressFn | None = None,
+        on_preview: PreviewFn | None = None,
     ) -> list[ComfyImageOutput]:
         current_node: str | None = None
         ws_images: list[ComfyImageOutput] = []
@@ -266,6 +281,9 @@ class ComfyClient:
                                 extension=ext,
                             )
                         )
+                # Frames from any other node are the sampler's previews: [u32 event=1][u32 type][image].
+                elif on_preview is not None and len(raw_message) > 8 and raw_message[:4] == b"\x00\x00\x00\x01":
+                    on_preview(bytes(raw_message[8:]))
                 continue
 
             if not isinstance(raw_message, str):

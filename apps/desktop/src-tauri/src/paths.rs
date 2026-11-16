@@ -69,6 +69,14 @@ impl Paths {
     pub fn tunnel_file(&self) -> PathBuf {
         self.root.join("tunnel.json")
     }
+    /// The host's engine settings: preload, and model folders linked from another ComfyUI.
+    pub fn engine_file(&self) -> PathBuf {
+        self.root.join("engine.json")
+    }
+    /// Written by the host beside engine.json; ComfyUI reads the linked folders from it.
+    pub fn extra_model_paths(&self) -> PathBuf {
+        self.root.join("extra_model_paths.yaml")
+    }
     pub fn cloudflared(&self) -> PathBuf {
         self.runtime().join("bin").join(exe("cloudflared"))
     }

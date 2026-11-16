@@ -72,6 +72,9 @@ pub struct HostInfo {
     /// The ComfyUI this host talks to, kept when only the host restarts.
     #[serde(skip)]
     comfy_port: Option<u16>,
+    /// The linked-folders yaml that ComfyUI started with; a new one restarts it.
+    #[serde(skip)]
+    comfy_folders: Option<String>,
 }
 
 /// Managed state. The locks stop a second call (React StrictMode runs effects twice in dev)
@@ -164,7 +167,7 @@ pub async fn ensure_host(app: &AppHandle) -> Result<HostInfo, String> {
             new_key()
         })?,
     };
-    let mut info = HostInfo { url: format!("http://127.0.0.1:{port}"), api_key, lan, comfy_port: None };
+    let mut info = HostInfo { url: format!("http://127.0.0.1:{port}"), api_key, lan, comfy_port: None, comfy_folders: None };
     let mut spec = host_spec(&paths, &resource_dir(app)?, port, &info.api_key, lan);
     let mut waits = vec![(HOST, HOST_START_TIMEOUT, spec.log_file.clone())];
     if engine {
@@ -177,6 +180,10 @@ pub async fn ensure_host(app: &AppHandle) -> Result<HostInfo, String> {
         };
         point_host_at_comfyui(&mut spec, &paths, comfy_port);
         info.comfy_port = Some(comfy_port);
+        info.comfy_folders = match reuse {
+            Some(_) => host.as_ref().and_then(|i| i.comfy_folders.clone()),
+            None => linked_folders(&paths),
+        };
         let comfy = comfyui_spec(&paths, comfy_port);
         waits.push((COMFYUI, COMFYUI_START_TIMEOUT, comfy.log_file.clone()));
         if reuse.is_none() {
@@ -342,12 +349,38 @@ fn ensure_comfyui(paths: &Paths) -> Result<(), String> {
 }
 
 /// ComfyUI on localhost only; the host is its one client.
+fn linked_folders(paths: &Paths) -> Option<String> {
+    fs::read_to_string(paths.extra_model_paths()).ok()
+}
+
+/// The host rewrote the linked model folders: restart ComfyUI on the same port so it reads them.
+/// The host sees the engine come back and loads the model again.
+pub(crate) async fn follow_model_folders(app: &AppHandle) -> Result<(), String> {
+    let state = app.state::<Runtime>();
+    let mut host = state.host.lock().await;
+    let Some(info) = host.as_mut() else { return Ok(()) };
+    let Some(port) = info.comfy_port else { return Ok(()) };
+    let paths = app_paths(app)?;
+    let folders = linked_folders(&paths);
+    if folders == info.comfy_folders {
+        return Ok(());
+    }
+    info.comfy_folders = folders; // set first: a failed start isn't retried every 2 seconds
+    state.supervisor.stop(COMFYUI);
+    state.supervisor.start(comfyui_spec(&paths, port)).map_err(|e| format!("Couldn't restart ComfyUI: {e}"))
+}
+
 pub fn comfyui_spec(paths: &Paths, port: u16) -> ProcessSpec {
     let path = |p: PathBuf| p.to_string_lossy().into_owned();
     let mut args: Vec<String> = ["main.py", "--listen", "127.0.0.1", "--port", &port.to_string()].map(String::from).to_vec();
     args.extend(["--base-directory".into(), path(paths.comfyui_data())]);
     args.extend(["--models-directory".into(), path(paths.models())]);
     args.push("--disable-auto-launch".into());
+    if paths.extra_model_paths().is_file() {
+        args.extend(["--extra-model-paths-config".into(), path(paths.extra_model_paths())]);
+    }
+    // Cheap step-by-step previews over the WebSocket, so a page can watch the image form.
+    args.extend(["--preview-method".into(), "latent2rgb".into()]);
     ProcessSpec {
         name: COMFYUI.into(),
         program: paths.venv_python(),
@@ -556,7 +589,9 @@ pub fn host_spec(paths: &Paths, resources: &Path, port: u16, api_key: &str, lan:
         ("DASHBOARD_DIR", path(resources.join("dashboard"))),
         ("KEYS_FILE", path(paths.keys_file())),
         ("NETWORK_FILE", path(paths.network_file())),
+        ("ENGINE_FILE", path(paths.engine_file())),
         ("TUNNEL_FILE", path(paths.tunnel_file())),
+        ("LOGS_DIR", path(paths.logs())),
         ("SERVE_ON_NETWORK", lan.to_string()),
         // The dashboard pages run on a login cookie; refusing other Host headers there stops DNS rebinding.
         ("ALLOWED_HOSTS", "127.0.0.1,localhost".into()),
@@ -647,7 +682,7 @@ mod tests {
 
     #[test]
     fn host_port_keeps_the_last_port_while_it_is_free() {
-        let info = |port: u16| HostInfo { url: format!("http://127.0.0.1:{port}"), api_key: String::new(), lan: false, comfy_port: None };
+        let info = |port: u16| HostInfo { url: format!("http://127.0.0.1:{port}"), api_key: String::new(), lan: false, comfy_port: None, comfy_folders: None };
         let free = free_port().unwrap();
         assert_eq!(host_port(Some(&info(free)), false).unwrap(), free);
         let held = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -684,6 +719,7 @@ mod tests {
         assert_eq!(env("SERVE_ON_NETWORK"), Some("false"));
         assert_eq!(env("NETWORK_FILE").map(PathBuf::from), Some(PathBuf::from("/data").join("network.json")));
         assert_eq!(env("KEYS_FILE").map(PathBuf::from), Some(PathBuf::from("/data").join("keys.json")));
+        assert_eq!(env("ENGINE_FILE").map(PathBuf::from), Some(PathBuf::from("/data").join("engine.json")));
 
         let lan = host_spec(&paths, Path::new("/res"), 4321, "k", true);
         assert!(lan.args.contains(&"0.0.0.0".to_string()));
@@ -713,11 +749,22 @@ mod tests {
         assert_eq!(spec.args[0], "main.py");
         assert_eq!(arg("--listen").as_deref(), Some("127.0.0.1"));
         assert_eq!(arg("--port").as_deref(), Some("5555"));
+        assert_eq!(arg("--preview-method").as_deref(), Some("latent2rgb"));
         assert_eq!(arg("--base-directory").map(PathBuf::from), Some(paths.comfyui_data()));
         assert_eq!(arg("--models-directory").map(PathBuf::from), Some(paths.models()));
         assert_eq!(spec.cwd, Some(comfyui_code(&paths)));
         assert_eq!(spec.health_url.as_deref(), Some("http://127.0.0.1:5555/system_stats"));
         assert!(!engine_installed(&paths));
+        assert!(arg("--extra-model-paths-config").is_none()); // no linked folders
+
+        let dir = std::env::temp_dir().join(format!("glint-linked-{}", std::process::id()));
+        let linked = Paths { root: dir.clone() };
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(linked.extra_model_paths(), "glint_1:\n").unwrap();
+        let spec = comfyui_spec(&linked, 5555);
+        let i = spec.args.iter().position(|a| a == "--extra-model-paths-config").unwrap();
+        assert_eq!(PathBuf::from(&spec.args[i + 1]), linked.extra_model_paths());
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     /// The real thing, against the network: installs into the temp dir (kept, so a re-run is fast)
