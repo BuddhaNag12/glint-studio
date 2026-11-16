@@ -10,10 +10,20 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import httpx
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, WebSocket, status
+from fastapi import (
+    Depends,
+    FastAPI,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    WebSocket,
+    status,
+)
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from starlette.websockets import WebSocketDisconnect
 
@@ -27,8 +37,11 @@ from app.auth import (
 from app.catalog import CatalogModel, load_catalog, resolve_params
 from app.comfy_client import ComfyClient, ComfyImageOutput, infer_mime_and_ext
 from app.config import Settings
+from app.dashboard import Sessions
+from app.dashboard import router as dashboard_router
 from app.errors import ApiError, api_error_handler
 from app.jobs import Job, JobQueue
+from app.local_models import Downloads
 from app.naming import extract_image_title, safe_header_value, title_to_filename_slug
 from app.providers.base import ProviderRequest
 from app.providers.comfyui import ComfyUIProvider
@@ -42,8 +55,13 @@ from app.schemas import (
     ImagesRequest,
     ImagesResponse,
 )
+from app.stats import Stats
 from app.styles import Style, compose, load_styles
-from app.workflow import WorkflowNotFoundError, WorkflowValidationError, load_workflow_bundle
+from app.workflow import (
+    WorkflowNotFoundError,
+    WorkflowValidationError,
+    load_workflow_bundle,
+)
 
 logger = logging.getLogger(__name__)
 IMAGE_FILENAME_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]*\.(png|jpg|jpeg|webp)$")
@@ -164,16 +182,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 ),
                 **remote_providers,
             }
+            app.state.stats = Stats(resolved_settings.stats_db)
             app.state.jobs = JobQueue(
                 max_concurrent=resolved_settings.max_concurrent_jobs,
                 queue_timeout_seconds=resolved_settings.queue_timeout_seconds,
                 run_timeout_seconds=resolved_settings.request_timeout_seconds,
                 keep_seconds=resolved_settings.image_url_ttl_seconds,  # finished jobs live as long as their URLs
+                on_finish=app.state.stats.record,
             )
-            try:
-                yield
-            finally:
-                await app.state.jobs.shutdown()
+            app.state.sessions = Sessions()
+            # Downloads get their own client: no overall timeout on a 20 GB file.
+            async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0)) as download_client:
+                app.state.downloads = Downloads(download_client, resolved_settings.models_dir or Path("models"))
+                try:
+                    yield
+                finally:
+                    await app.state.downloads.cancel()
+                    await app.state.jobs.shutdown()
+                    app.state.stats.db.close()
 
     app = FastAPI(
         title="Glint Studio Host",
@@ -194,6 +220,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return await api_error_handler(request, ApiError("bad_params", message or "Invalid request."))
 
     app.add_exception_handler(RequestValidationError, validation_error_handler)
+    app.include_router(dashboard_router)
+    if resolved_settings.allowed_hosts != ["*"]:
+        # A web page on another site can't reach the host by renaming 127.0.0.1 (DNS rebinding).
+        app.add_middleware(TrustedHostMiddleware, allowed_hosts=resolved_settings.allowed_hosts)
 
     app.add_middleware(
         CORSMiddleware,
@@ -261,7 +291,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await provider.check()
         return {"ok": True}
 
-    def _submit(request: Request, job: ProviderRequest, user_prompt: str, response_format: str) -> Job:
+    def _submit(
+        request: Request, job: ProviderRequest, style: Style | None, user_prompt: str, response_format: str
+    ) -> Job:
         provider = request.app.state.providers.get(job.model.provider)
         if provider is None:
             raise ApiError("provider_down", f"No '{job.model.provider}' provider is set up.")
@@ -271,9 +303,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             prompt=user_prompt,
             response_format=response_format,
             local=job.model.provider == "comfyui",  # remote APIs don't share the local GPU
+            style=style.id if style else None,
         )
 
-    def _plan_images(request: Request, body: ImagesRequest) -> ProviderRequest:
+    def _plan_images(request: Request, body: ImagesRequest) -> tuple[ProviderRequest, Style | None]:
         """Check an images request against the catalog: the model, style and final params."""
         models: dict[str, CatalogModel] = request.app.state.models
         styles: dict[str, Style] = request.app.state.styles
@@ -299,7 +332,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             n=body.n,
         )
         prompt = compose(model, body.prompt, style=style, negative=body.negative_prompt)
-        return ProviderRequest(model, prompt, params, body.seed)
+        return ProviderRequest(model, prompt, params, body.seed), style
 
     def _image_data(cfg: Settings, job: Job) -> list[ImageData]:
         """The finished job's images as OpenAI-style data; url files are written once."""
@@ -325,7 +358,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def images_generations(body: ImagesRequest, request: Request) -> ImagesResponse:
         """OpenAI-compatible image generation over every catalog and provider model."""
         jobs: JobQueue = request.app.state.jobs
-        job = _submit(request, _plan_images(request, body), body.prompt, body.response_format)
+        job = _submit(request, *_plan_images(request, body), body.prompt, body.response_format)
         result = await jobs.wait(job)
         data = _image_data(request.app.state.settings, job)
         return ImagesResponse(created=int(time.time()), data=data, model=job.model, seed=result.seed)
@@ -334,7 +367,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def create_job(body: ImagesRequest, request: Request) -> dict:
         """Queue a generation and answer at once; follow it with GET /api/v1/jobs/{id} or the events."""
         jobs: JobQueue = request.app.state.jobs
-        job = _submit(request, _plan_images(request, body), body.prompt, body.response_format)
+        job = _submit(request, *_plan_images(request, body), body.prompt, body.response_format)
         return {"id": job.id, "status": job.status, "queue_position": jobs.queue_position(job)}
 
     @app.get("/api/v1/jobs/{job_id}", dependencies=[Depends(require_api_key)])
@@ -396,7 +429,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     model, style=style, width=body.width, height=body.height, steps=body.steps, cfg=body.cfg
                 )
                 prompt = compose(model, body.prompt, style=style, negative=body.negative_prompt)
-                job = _submit(request, ProviderRequest(model, prompt, params, body.seed), body.prompt, "legacy")
+                job = _submit(
+                    request, ProviderRequest(model, prompt, params, body.seed), style, body.prompt, "legacy"
+                )
             else:
                 # The user's own workflow from WORKFLOWS_DIR, run as-is with no catalog or style.
                 workflow_template, mapping = load_workflow_bundle(cfg.workflows_dir, body.workflow)

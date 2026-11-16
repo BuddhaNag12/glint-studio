@@ -123,9 +123,18 @@ export default function Setup({
             The host is running at {ready.host.url} with {ready.models} model{ready.models === 1 ? "" : "s"} in
             the catalog.
           </p>
-          <button className="primary" onClick={() => onReady(ready.host)}>
-            {engine === "local" ? "Choose a model" : "Add your API key"}
-          </button>
+          {engine === "local" ? (
+            <>
+              <p className="lead">Pick and download a model in the dashboard. Glint Studio stays in the menu bar.</p>
+              <button className="primary" onClick={() => invoke("open_dashboard").catch((e) => setError(String(e)))}>
+                Open the dashboard
+              </button>
+            </>
+          ) : (
+            <button className="primary" onClick={() => onReady(ready.host)}>
+              Add your API key
+            </button>
+          )}
         </section>
       )}
 

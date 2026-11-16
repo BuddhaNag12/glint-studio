@@ -105,12 +105,18 @@ pub async fn install_engine(app: AppHandle, state: State<'_, Runtime>, on_progre
     .map_err(|e| e.to_string())?
 }
 
-/// Starts the host, and ComfyUI too when the engine is installed (the host is pointed at it).
 #[tauri::command]
-pub async fn start_host(app: AppHandle, state: State<'_, Runtime>) -> Result<HostInfo, String> {
+pub async fn start_host(app: AppHandle) -> Result<HostInfo, String> {
+    ensure_host(&app).await
+}
+
+/// Starts the host, and ComfyUI too when the engine is installed (the host is pointed at it).
+/// Returns the running host as is when both are already up.
+pub async fn ensure_host(app: &AppHandle) -> Result<HostInfo, String> {
+    let state = app.state::<Runtime>();
     let mut host = state.host.lock().await;
     let supervisor = state.supervisor.clone();
-    let paths = app_paths(&app)?;
+    let paths = app_paths(app)?;
     let engine = engine_installed(&paths);
     if let Some(info) = host.as_ref() {
         let running = |name| supervisor.status(name) == ProcessStatus::Running;
@@ -131,7 +137,7 @@ pub async fn start_host(app: AppHandle, state: State<'_, Runtime>) -> Result<Hos
     }
     let port = free_port().map_err(|e| e.to_string())?;
     let info = HostInfo { url: format!("http://127.0.0.1:{port}"), api_key: new_key()? };
-    let mut spec = host_spec(&paths, &resource_dir(&app)?, port, &info.api_key);
+    let mut spec = host_spec(&paths, &resource_dir(app)?, port, &info.api_key);
     let mut waits = vec![(HOST, HOST_START_TIMEOUT, spec.log_file.clone())];
     if engine {
         let comfy_port = free_port().map_err(|e| e.to_string())?;
@@ -141,9 +147,10 @@ pub async fn start_host(app: AppHandle, state: State<'_, Runtime>) -> Result<Hos
         supervisor.start(comfy).map_err(|e| format!("Couldn't start ComfyUI: {e}"))?;
     }
     // After the ComfyUI vars, so a provider key can't take their names.
-    spec.env.extend(crate::secrets::host_env(&paths, &resource_dir(&app)?, &spec.env));
+    spec.env.extend(crate::secrets::host_env(&paths, &resource_dir(app)?, &spec.env));
     supervisor.start(spec).map_err(|e| format!("Couldn't start the host: {e}"))?;
     tauri::async_runtime::spawn_blocking(move || {
+        let _ = write_hardware(&paths); // without it the host recommends models for the CPU
         for (name, timeout, log) in waits {
             wait_running(&supervisor, name, timeout).map_err(|e| format!("{e}\n{}", log_tail(&log, 15)))?;
         }
@@ -153,6 +160,30 @@ pub async fn start_host(app: AppHandle, state: State<'_, Runtime>) -> Result<Hos
     .map_err(|e| e.to_string())??;
     *host = Some(info.clone());
     Ok(info)
+}
+
+/// Whether `install_core` has finished once, so the host can start without the setup window.
+pub fn core_installed(app: &AppHandle) -> bool {
+    app_paths(app).is_ok_and(|p| p.venv_python().exists())
+}
+
+impl Runtime {
+    /// One line for the menu-bar menu.
+    pub fn status_line(&self) -> &'static str {
+        use ProcessStatus::*;
+        match (self.supervisor.status(HOST), self.supervisor.status(COMFYUI)) {
+            (Running, Running | Stopped | Starting) => "● Running",
+            (Running, _) => "⚠ The local engine stopped",
+            (Starting, _) => "Starting…",
+            (Stopped, _) => "○ Not running",
+            _ => "⚠ Stopped: open Setup to repair",
+        }
+    }
+}
+
+/// The host can't see the GPU itself, so it recommends models from the app's scan.
+fn write_hardware(paths: &Paths) -> io::Result<()> {
+    fs::write(paths.hardware_file(), serde_json::to_vec(&scan::scan())?)
 }
 
 fn app_paths(app: &AppHandle) -> Result<Paths, String> {
@@ -330,7 +361,7 @@ fn fetch_and_unpack(paths: &Paths, url: &str, sha: &str, what: &str) -> Result<P
     fs::create_dir_all(&tmp).map_err(|e| e.to_string())?;
     let archive = tmp.join(url.rsplit('/').next().unwrap_or("archive"));
     // shortcut: system curl and tar (in Windows 10+, macOS and desktop Linux) instead of an HTTP
-    // and archive crate; switch when download.rs brings an HTTP client with progress and resume.
+    // and archive crate; switch if the app ever needs an HTTP client of its own.
     run(Command::new(system_tool("curl")).args(["-fsSL", "--retry", "3", "-o"]).arg(&archive).arg(url))?;
     let got = sha256_file(&archive).map_err(|e| e.to_string())?;
     if got != sha {
@@ -390,7 +421,7 @@ pub(crate) fn sha256_file(path: &Path) -> io::Result<String> {
     Ok(hex(&hasher.finalize()))
 }
 
-fn hex(bytes: &[u8]) -> String {
+pub(crate) fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
@@ -423,7 +454,7 @@ fn webview_origins() -> &'static str {
     }
 }
 
-/// `resources` holds `host/` (the app package and pyproject.toml) and `catalog/`.
+/// `resources` holds `host/` (the app package and pyproject.toml), `catalog/` and `dashboard/` (the built UI).
 pub fn host_spec(paths: &Paths, resources: &Path, port: u16, api_key: &str) -> ProcessSpec {
     let url = format!("http://127.0.0.1:{port}");
     let path = |p: PathBuf| p.to_string_lossy().into_owned();
@@ -435,6 +466,12 @@ pub fn host_spec(paths: &Paths, resources: &Path, port: u16, api_key: &str) -> P
         ("OUTPUT_DIR", path(paths.outputs())),
         ("WORKFLOWS_DIR", path(paths.workflows())),
         ("USER_STYLES_DIR", path(paths.styles())),
+        ("MODELS_DIR", path(paths.models())),
+        ("HARDWARE_FILE", path(paths.hardware_file())),
+        ("STATS_DB", path(paths.stats_db())),
+        ("DASHBOARD_DIR", path(resources.join("dashboard"))),
+        // The dashboard is a browser page; refusing other Host headers stops DNS rebinding.
+        ("ALLOWED_HOSTS", "127.0.0.1,localhost".into()),
         ("PYTHONDONTWRITEBYTECODE", "1".into()), // the app bundle is read-only
         ("PYTHONUNBUFFERED", "1".into()),        // logs reach host.log as they happen
     ];
@@ -537,6 +574,9 @@ mod tests {
         assert!(env("CORS_ORIGINS").unwrap().contains("tauri://localhost"));
         assert_eq!(env("CATALOG_DIR").map(PathBuf::from), Some(PathBuf::from("/res").join("catalog")));
         assert_eq!(spec.cwd, Some(PathBuf::from("/res").join("host")));
+        assert_eq!(env("MODELS_DIR").map(PathBuf::from), Some(PathBuf::from("/data").join("models")));
+        assert_eq!(env("DASHBOARD_DIR").map(PathBuf::from), Some(PathBuf::from("/res").join("dashboard")));
+        assert_eq!(env("ALLOWED_HOSTS"), Some("127.0.0.1,localhost"));
         assert_eq!(spec.health_url.as_deref(), Some("http://127.0.0.1:4321/livez"));
         assert!(spec.args.contains(&"4321".to_string()));
     }
@@ -629,8 +669,8 @@ mod tests {
         (result, url)
     }
 
-    /// Downloads Z-Image Turbo for this machine (~21 GB in bf16) and makes one image through the
-    /// host's OpenAI endpoint; the response is saved as first-image.json next to the runtime.
+    /// Downloads Z-Image Turbo for this machine (~21 GB in bf16) through the host, then makes one
+    /// image through its OpenAI endpoint; the response is saved as first-image.json next to the runtime.
     /// `cargo test real_first_image -- --ignored --nocapture` (after real_engine)
     #[test]
     #[ignore]
@@ -639,30 +679,34 @@ mod tests {
         let paths = Paths { root: std::env::temp_dir().join("glint-runtime-real") };
         assert!(engine_installed(&paths), "run real_engine first");
         let started = Instant::now();
-        let models = crate::recommend::load_catalog(&repo.join("catalog")).unwrap();
-        let zit = models.iter().find(|m| m.id == "z-image-turbo").unwrap();
-        let variant = crate::recommend::chosen_variant(&scan::scan(), zit).unwrap();
-        let next = std::cell::Cell::new(0);
-        crate::download::download_variant(&paths.models(), variant, |p| {
-            if p.verifying || p.done >= next.get() {
-                next.set(p.done + 1_000_000_000);
-                println!("{:>6.1}s {} {p:?}", started.elapsed().as_secs_f64(), variant.precision);
-            }
-        })
-        .unwrap();
-
+        write_hardware(&paths).unwrap();
         let supervisor = Supervisor::new();
         let (result, url) = start_engine_and_host(&supervisor, &paths, &repo);
+        let curl = |args: &[&str]| {
+            let out = Command::new("curl").args(["-s", "-H", "X-API-Key: test-key"]).args(args).output().unwrap();
+            String::from_utf8_lossy(&out.stdout).into_owned()
+        };
+        let download = format!("{url}/api/v1/local-models/z-image-turbo/download");
+        if result.is_ok() {
+            let mut state = curl(&["-X", "POST", &download]);
+            while state.contains("\"downloading\"") {
+                println!("{:>6.1}s {state}", started.elapsed().as_secs_f64());
+                thread::sleep(Duration::from_secs(30));
+                state = curl(&[&download]);
+            }
+            println!("{:>6.1}s {state}", started.elapsed().as_secs_f64());
+        }
+
         let out = paths.root.join("first-image.json");
         let body = r#"{"model":"z-image-turbo","prompt":"a lighthouse on a cliff at dawn, watercolor","response_format":"b64_json"}"#;
-        let curl = result.clone().map(|_| {
+        let generate = result.clone().map(|_| {
             Command::new("curl")
                 .args(["-s", "-m", "900", "-H", "X-API-Key: test-key", "-H", "Content-Type: application/json", "-d", body, "-o"])
                 .arg(&out)
                 .arg(format!("{url}/v1/images/generations"))
                 .status()
         });
-        println!("{:>6.1}s {result:?} {curl:?}", started.elapsed().as_secs_f64());
+        println!("{:>6.1}s {result:?} {generate:?}", started.elapsed().as_secs_f64());
         let log = log_tail(&paths.logs().join("comfyui.log"), 15);
         supervisor.stop_all();
         let json = fs::read_to_string(&out).unwrap_or_default();

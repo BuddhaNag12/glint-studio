@@ -49,6 +49,14 @@ impl Paths {
     pub fn providers_file(&self) -> PathBuf {
         self.root.join("providers.json")
     }
+    /// The app's hardware scan, for the host's model recommendations.
+    pub fn hardware_file(&self) -> PathBuf {
+        self.root.join("hardware.json")
+    }
+    /// The host's job history, for the dashboard.
+    pub fn stats_db(&self) -> PathBuf {
+        self.root.join("stats.db")
+    }
     pub fn logs(&self) -> PathBuf {
         self.root.join("logs")
     }

@@ -1,0 +1,59 @@
+/* The dashboard page; tokens and shared pieces come from App.css. */
+.page.wide { max-width: 960px; padding-top: 32px; display: grid; gap: 16px; align-content: start; }
+.page.wide > h1 { margin: 0; }
+.page.wide > .lead { margin: 0; }
+.topbar {
+  display: flex; align-items: center; gap: 24px; padding: 12px 24px;
+  border-bottom: 1px solid var(--border); background: var(--card);
+}
+.topbar nav { display: flex; gap: 4px; flex-wrap: wrap; }
+.topbar a { color: var(--muted); text-decoration: none; padding: 6px 12px; border-radius: 8px; }
+.topbar a:hover { color: var(--fg); }
+.topbar a[aria-current="page"] { color: var(--fg); background: var(--bg); }
+.topbar a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.muted { color: var(--muted); }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; }
+.tile { display: grid; gap: 4px; padding: 16px 20px; }
+.tile strong { font-size: 1.35rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+.split { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+.split .card { min-width: 0; }
+.facts meter { width: 120px; vertical-align: middle; }
+.jobs { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.jobs li { display: flex; justify-content: space-between; gap: 12px; align-items: center; }
+.jobs progress { width: 50%; accent-color: var(--accent); }
+table.data { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+table.data th { text-align: left; color: var(--muted); font-weight: 500; }
+table.data th, table.data td { padding: 6px 8px 6px 0; border-bottom: 1px solid var(--border); }
+table.data tr:last-child td { border-bottom: 0; }
+.chart { position: relative; }
+.chart svg { width: 100%; height: auto; display: block; overflow: visible; }
+.chart .grid { stroke: var(--grid); stroke-width: 1; }
+.chart .axis { fill: var(--muted); font-size: 11px; }
+.chart .done { fill: var(--accent); }
+.chart .failed { fill: var(--chart-failed); }
+.chart .hit { fill: transparent; }
+.chart .hit:hover { fill: var(--fg); fill-opacity: 0.04; }
+.legend { display: flex; gap: 16px; color: var(--muted); font-size: 0.85rem; margin-bottom: 8px; }
+.swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; }
+.swatch.done { background: var(--accent); }
+.swatch.failed { background: var(--chart-failed); }
+.tooltip {
+  position: absolute; top: 24px; transform: translateX(-50%); pointer-events: none;
+  display: grid; gap: 2px; padding: 8px 10px; font-size: 0.85rem; white-space: nowrap;
+  background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 4px 16px rgb(0 0 0 / 0.12);
+}
+.chart details { margin-top: 8px; color: var(--muted); font-size: 0.9rem; }
+.chart details table { margin-top: 8px; color: var(--fg); }
+.row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.row code, pre.snippet { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85rem; }
+.row code { overflow-wrap: anywhere; }
+pre.snippet { margin: 0; padding: 12px; background: var(--bg); border-radius: 8px; overflow-x: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.note { margin: 12px 0 0; font-size: 0.9rem; }
+.card > h2 { margin-bottom: 12px; }
+@media (max-width: 600px) {
+  .topbar { flex-direction: column; align-items: flex-start; gap: 8px; padding: 12px 16px; }
+  .page.wide { padding: 16px; }
+  /* The chart's viewBox shrinks to about half on a phone; double the label size so it stays readable. */
+  .chart .axis { font-size: 20px; }
+}

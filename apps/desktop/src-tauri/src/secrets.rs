@@ -147,7 +147,7 @@ fn entry(id: &str) -> Result<keyring::Entry, String> {
 
 async fn restart_host(app: AppHandle, state: State<'_, Runtime>) -> Result<HostInfo, String> {
     state.supervisor.stop(HOST);
-    runtime::start_host(app, state)
+    runtime::ensure_host(&app)
         .await
         .map_err(|e| format!("The key is saved, but the host didn't restart: {e}"))
 }

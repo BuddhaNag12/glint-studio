@@ -8,6 +8,10 @@ LAN or tunnelled API. No GPU? Plug in your own key for an external image API and
 It's for anyone who has tried to wire up ComfyUI, models, an API bridge and a tunnel by hand and
 got stuck: Glint Studio sets the whole stack up for you.
 
+After the first-run setup it lives in the menu bar (the system tray on Windows and Linux). **Open
+Dashboard** opens a page in your browser with what's running, images per day, GPU memory, the
+models that fit your machine, and the address and key other apps use to connect.
+
 Status: **Phase 1** in progress. The host is a port of a working ComfyUI bridge, now with a model
 catalog, style presets and clear error codes.
 See `docs/ROADMAP.md` for the plan.
@@ -44,7 +48,7 @@ Not in v1: video, and spreading work across several machines.
 | Path | What |
 |---|---|
 | `host/` | Python FastAPI host: catalog, styles, providers, and the ported ComfyUI bridge |
-| `apps/desktop/` | Tauri v2 app: React UI + Rust core (scaffold only for now) |
+| `apps/desktop/` | Tauri v2 app: menu-bar icon, setup window (React) and Rust core; `src/dashboard/` is the browser dashboard the host serves |
 | `catalog/` | Model, workflow and style definitions (Phase 1) |
 
 ## Develop
@@ -90,8 +94,15 @@ uv, Python 3.12, a venv, and the host's dependencies (about 50 MB, no admin righ
 local engine also installs PyTorch for your GPU and ComfyUI v0.45.0 (about 2 GB of disk on an Apple
 Silicon Mac; more with NVIDIA or AMD, whose PyTorch builds are larger). It then starts ComfyUI (if installed) and the host on free localhost ports,
 with a new API key each launch; logs go to `logs/host.log` and `logs/comfyui.log` there.
-With the local engine, the next page suggests models that fit your GPU and downloads them into
-`models/` there (resumable, each file checked against the catalog's sha256).
+When setup is done the window hides and the dashboard opens in your browser; from then on the app
+starts in the menu bar. The dashboard's Models page suggests models that fit your GPU and downloads
+them into `models/` there (resumable, each file checked against the catalog's sha256). Closing the
+window keeps everything running; **Quit** in the menu stops it.
+
+To work on the dashboard without the app, build it (`npm run build` in `apps/desktop`) and run the
+host with `DASHBOARD_DIR=../apps/desktop/dist`. The dashboard needs a login link signed with the
+host's key: `/login?exp=<unix time, at most 60 s ahead>&sig=<hex HMAC-SHA256 of
+"glint-dashboard-login:<exp>" with the API key>`.
 Rust tests: `cargo test` in `apps/desktop/src-tauri`; the real installs against the network are
 `cargo test real_install_and_host -- --ignored --nocapture`, then `cargo test real_engine -- --ignored --nocapture`,
 then `cargo test real_first_image -- --ignored --nocapture` (downloads Z-Image Turbo, about 21 GB, and makes one image).

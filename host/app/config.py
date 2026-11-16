@@ -46,10 +46,17 @@ class Settings(BaseSettings):
     comfyui_dir: Path | None = None
     comfyui_temp_dir: Path | None = None
     comfyui_output_dir: Path | None = None
+    # Set by the desktop app; unset when the host runs on its own.
+    models_dir: Path | None = None  # where model downloads go (ComfyUI reads it)
+    hardware_file: Path | None = None  # the app's machine scan, for model recommendations
+    stats_db: Path | None = None  # SQLite job log for the dashboard; unset keeps it in memory
+    dashboard_dir: Path | None = None  # the built dashboard web page
+    # Host header values to accept; ["*"] accepts any. Guards the dashboard against DNS rebinding.
+    allowed_hosts: Annotated[list[str], NoDecode] = Field(default_factory=lambda: ["*"])
 
     @field_validator(
         "comfyui_dir", "comfyui_temp_dir", "comfyui_output_dir", "user_styles_dir",
-        "providers_file", mode="before"
+        "providers_file", "models_dir", "hardware_file", "stats_db", "dashboard_dir", mode="before"
     )
     @classmethod
     def parse_optional_path(cls, value: Any) -> Any:
@@ -65,7 +72,7 @@ class Settings(BaseSettings):
             return Path(stripped).expanduser()
         return value
 
-    @field_validator("cors_origins", mode="before")
+    @field_validator("cors_origins", "allowed_hosts", mode="before")
     @classmethod
     def parse_cors_origins(cls, value: Any) -> list[str]:
         """Accept either a JSON array, comma-separated string, or list of origins."""
@@ -78,10 +85,10 @@ class Settings(BaseSettings):
             if stripped.startswith("["):
                 parsed = json.loads(stripped)
                 if not isinstance(parsed, list):
-                    raise ValueError("CORS_ORIGINS JSON value must be a list.")
+                    raise ValueError("JSON value must be a list.")
                 return [str(item).strip() for item in parsed if str(item).strip()]
             return [item.strip() for item in stripped.split(",") if item.strip()]
-        raise ValueError("CORS_ORIGINS must be a list or comma-separated string.")
+        raise ValueError("Must be a list or comma-separated string.")
 
     @field_validator("comfyui_url", "public_base_url")
     @classmethod

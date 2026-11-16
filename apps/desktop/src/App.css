@@ -9,6 +9,8 @@
   --warn-bg: #fff6e0;
   --warn-fg: #6b4a00;
   --error: #b42318;
+  --chart-failed: #b42318; /* chart colors checked with the dataviz validator, both modes */
+  --grid: #e8e8ec;
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   font-size: 16px;
   line-height: 1.5;
@@ -28,6 +30,8 @@
     --warn-bg: #3a2f12;
     --warn-fg: #f5d58a;
     --error: #ff8a80;
+    --chart-failed: #e05a50;
+    --grid: #2a2a31;
   }
 }
 body { margin: 0; }

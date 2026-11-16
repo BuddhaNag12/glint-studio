@@ -33,8 +33,12 @@ class ComfyUIProvider:
         self.timeout_seconds = timeout_seconds
 
     async def health(self) -> None:
+        await self.system_stats()
+
+    async def system_stats(self) -> dict:
+        """ComfyUI's /system_stats: its devices with total and free VRAM."""
         try:
-            await self.client.check_health()
+            return await self.client.check_health() or {}
         except ComfyConnectionError as exc:
             raise ApiError("engine_down", str(exc)) from exc
 

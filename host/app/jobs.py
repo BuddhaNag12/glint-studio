@@ -32,6 +32,7 @@ class Job:
     prompt: str  # the user's prompt, before any style; used for titles and file names
     response_format: str
     local: bool
+    style: str | None = None
     status: JobStatus = "queued"
     progress: float = 0.0
     created: float = field(default_factory=time.time)
@@ -63,7 +64,9 @@ class JobQueue:
         queue_timeout_seconds: float,
         run_timeout_seconds: float,
         keep_seconds: float,
+        on_finish: Callable[[Job], None] | None = None,  # the job log
     ) -> None:
+        self.on_finish = on_finish
         self._slots = asyncio.Semaphore(max_concurrent)
         self.queue_timeout = queue_timeout_seconds
         self.run_timeout = run_timeout_seconds
@@ -71,9 +74,11 @@ class JobQueue:
         self.jobs: dict[str, Job] = {}
         self._listeners: set[asyncio.Queue[dict]] = set()
 
-    def submit(self, run: Runner, *, model: str, prompt: str, response_format: str, local: bool) -> Job:
+    def submit(
+        self, run: Runner, *, model: str, prompt: str, response_format: str, local: bool, style: str | None = None
+    ) -> Job:
         self._prune()
-        job = Job(uuid.uuid4().hex, model, prompt, response_format, local)
+        job = Job(uuid.uuid4().hex, model, prompt, response_format, local, style)
         self.jobs[job.id] = job
         self._emit("queued", job)
         job.task = asyncio.create_task(self._drive(job, run))
@@ -168,6 +173,8 @@ class JobQueue:
             job.finished = time.time()
             job.done.set()
             self._emit(job.status, job)
+            if self.on_finish is not None:
+                self.on_finish(job)
 
     def _progress(self, job: Job, value: float) -> None:
         job.progress = value

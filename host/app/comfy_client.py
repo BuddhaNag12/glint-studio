@@ -145,15 +145,16 @@ class ComfyClient:
         # Small bounded fallback cache in case ComfyUI serves a cached output whose disk file we unlinked.
         self._cleaned_image_cache: OrderedDict[tuple[str, str, str], ComfyImageOutput] = OrderedDict()
 
-    async def check_health(self, timeout_seconds: float = 5.0) -> None:
-        """Verify ComfyUI is reachable via GET /system_stats."""
+    async def check_health(self, timeout_seconds: float = 5.0) -> dict[str, Any]:
+        """Verify ComfyUI is reachable via GET /system_stats, and return the stats."""
         try:
             response = await self.http_client.get(
                 f"{self.http_url}/system_stats",
                 timeout=timeout_seconds,
             )
             response.raise_for_status()
-        except (httpx.HTTPError, OSError) as exc:
+            return response.json()
+        except (httpx.HTTPError, OSError, ValueError) as exc:
             raise ComfyConnectionError(f"ComfyUI health check failed: {exc}") from exc
 
     async def generate_images(

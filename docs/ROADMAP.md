@@ -43,35 +43,46 @@ The product goals are **standalone, lightweight, customizable, easy to set up**.
 
 ## Architecture
 
+Glint Studio lives in the menu bar (the system tray on Windows and Linux), like LM Studio's server
+mode or Ollama. Day to day you use a **dashboard in your browser**, served by the host. The app's
+own window is only for first-run setup, repair, and cloud keys.
+
 ```
+ menu bar ▾  ● Running · Open Dashboard · Setup & Cloud Keys… · Quit
 ┌──────────── Desktop app (Tauri v2, Rust) ────────────┐
-│ React UI (Vite)          Rust core                   │
-│  Onboarding / Discover   scan.rs      hardware probe │
-│  Generate / Styles       recommend.rs catalog × HW   │
-│  Providers / Server      runtime.rs   uv → Python;   │
-│  Settings                             torch+ComfyUI  │
+│ Setup window (React)     Rust core                   │
+│  Onboarding → Setup      scan.rs      hardware probe │
+│  Cloud keys              runtime.rs   uv → Python;   │
+│                                       torch+ComfyUI  │
 │                                       on demand      │
-│                          download.rs  resumable+sha  │
-│                          supervisor.rs run, idle-stop│
+│                          supervisor.rs run, restart  │
 │                          secrets.rs   OS keychain    │
-│                          tunnel.rs    cloudflared/   │
-│                                       ngrok/tailscale│
+│                          dashboard.rs tray + signed  │
+│                                       login link     │
+│                          tunnel.rs    (Phase 6)      │
 └──────────────┬───────────────────────────────────────┘
-               │ http://127.0.0.1:<port> (per-launch UI token)
+               │ starts it; opens /login?exp&sig in the browser
         ┌──────▼──────────────────────┐  provider interface
         │ host (Python FastAPI)       │──┬──▶ local ComfyUI (127.0.0.1, optional)
-        │ = evolved comfy-api-bridge  │  ├──▶ remote ComfyUI (your GPU box)
-        │ jobs · styles · catalog     │  ├──▶ OpenAI-compatible endpoint (any base URL)
-        │ OpenAI + native + legacy API│  └──▶ Replicate · fal.ai · Stability · BFL · Google
+        │ jobs · styles · catalog     │  ├──▶ remote ComfyUI (your GPU box)
+        │ OpenAI + native + legacy API│  ├──▶ OpenAI-compatible endpoint (any base URL)
+        │ dashboard: Overview, Models,│  └──▶ Replicate · fal.ai · Stability · BFL · Google
+        │  Connect; job stats (SQLite)│
+        │ recommendations, downloads  │
         └──────▲──────────────────────┘
                │ LAN (opt-in) / tunnel (opt-in), API key required
           other apps, phones, existing bridge clients
 ```
 
 **Why this split:**
-- The Rust core does everything that has to happen **before** Python exists: scan the machine, install Python, keep secrets, supervise processes, run the tunnel.
+- The Rust core does everything that has to happen **before** Python exists: scan the machine, install Python, keep secrets, supervise processes, run the tunnel. It also owns the menu-bar icon.
 - The Python host keeps the tested bridge code. Every backend, local or cloud, sits behind one provider interface, so styles, clamping, jobs, errors and the API work the same for all of them.
-- The UI only ever talks to the host.
+- The host also serves the dashboard and does everything that needs it running anyway: model recommendations (from the app's scan, written to `hardware.json`), resumable checked downloads, and job statistics. One codebase, testable with pytest.
+
+**Dashboard security.** The host binds 127.0.0.1 and has a new API key every launch.
+- The menu-bar app opens `/login?exp=…&sig=…`, signed with HMAC-SHA256 of the key and valid for 60 seconds, once.
+- The host swaps it for an HttpOnly, SameSite=Strict session cookie. The page uses the cookie once to fetch the key, keeps it in memory, and calls the API like any other client.
+- The host refuses any `Host` header but `127.0.0.1` and `localhost`, so a web page can't reach it through DNS rebinding.
 
 ## Repo structure
 
@@ -79,11 +90,11 @@ The product goals are **standalone, lightweight, customizable, easy to set up**.
 glint-studio/
   apps/desktop/
     src/                       React UI
-      pages/ Onboarding, Discover, Generate, Styles, Providers, Server, Settings
-      api/host.ts              typed client for the host API
+      pages/ Onboarding, Setup, Providers (the setup window)
+      dashboard/ Overview, Models, Connect (served by the host; dashboard.html entry)
     src-tauri/src/
-      main.rs  scan.rs  recommend.rs  runtime.rs
-      download.rs  supervisor.rs  secrets.rs  tunnel.rs  paths.rs
+      main.rs  scan.rs  runtime.rs  supervisor.rs  secrets.rs
+      dashboard.rs  paths.rs  tunnel.rs (Phase 6)
   host/                        Python package (from comfy-api-bridge)
     app/
       main.py                  routes
@@ -93,6 +104,9 @@ glint-studio/
       jobs.py                  queue, progress, cancel, timeouts
       styles.py                prompt composition
       catalog.py               model/variant lookup, param clamping
+      local_models.py          recommendations and downloads (resume, sha256)
+      stats.py                 job history in SQLite, for the dashboard
+      dashboard.py             login, the dashboard page and its API
       errors.py                {error:{code,message}} + status table
       providers/
         base.py                Provider interface + capabilities
@@ -114,6 +128,7 @@ glint-studio/
 - `runtime/`: uv, Python, venv, and ComfyUI once the local engine is installed
 - `models/`: wired into ComfyUI through `extra_model_paths.yaml`
 - `outputs/`, `styles/` (user edits), `workflows/` (imported), `providers.json` (user endpoints and models, never keys), `config.json`
+- `hardware.json` (the app's scan, for recommendations) and `stats.db` (job history, 90 days)
 
 Secrets (provider API keys, network API keys, HF token) go in the OS keychain, never in files, logs or `localStorage`.
 
@@ -216,7 +231,7 @@ Everything users can change is plain JSON in the app-data folder, so it can be b
 
   AMD on Windows is "experimental: CPU fallback" in v1.
 
-### Recommendations (`recommend.rs`, pure function with unit tests)
+### Recommendations (`host/app/local_models.py`, pure function with unit tests)
 - **Input:** a `HardwareProfile` and the catalog.
 - **For each model:** pick the best variant that fits, in the order bf16 → fp8 → GGUF Q8 → Q4. "Fits" means: `min_vram ≤ vram_budget`, files × 1.2 ≤ free disk, and the backend is supported.
 - **Output:** each model is tagged **Runs great**, **Runs slow** or **Won't fit**, with a one-line reason.
@@ -296,12 +311,16 @@ Each phase ends with a working milestone, and each can ship on its own.
   - On a clean machine, a cloud-only setup (core tier, no PyTorch) generates with a provider key, and the install stays near 100 MB.
   - On a clean Windows + NVIDIA machine and a clean Apple Silicon Mac, the local engine installs and ComfyUI and the host run without opening a terminal.
 
-**Phase 3 – Catalog, recommendations, downloads (about 1–2 weeks)**
-- `recommend.rs`, `download.rs` (resume, sha256, HF token in the keychain), the Discover page, and linking existing model folders.
-- Milestone: scan → "Recommended for you" → one click → model ready.
-- Done so far: model `variants` in the catalog (Z-Image Turbo bf16 from Comfy-Org/Z-Image-Turbo), `recommend.rs` (best variant that fits the GPU, else Runs slow from RAM, else Won't fit; disk checked), `download.rs` (curl with resume to `.part`, sha256, then rename; one at a time), and the Discover page after setup.
-- Next: finish the milestone check, the first real local image with `cargo test real_first_image -- --ignored --nocapture` (downloads Z-Image Turbo bf16, about 21 GB, resuming any `.part` left in the test runtime), then try Download in the real app window.
-- Still to do: smaller variants (fp8, GGUF), which need the host to put file names into the workflow; the HF token; linking existing model folders; a cancel button.
+**Phase 3 – Menu bar, dashboard, recommendations, downloads (about 1–2 weeks)**
+- The app moves to the menu bar; the setup window opens only on first run or from the menu.
+- The host serves a browser dashboard:
+  - **Overview:** engine and queue status, images per day (done and failed), GPU memory, live jobs, per-model typical and slowest times, errors, styles used.
+  - **Models:** recommendations for this machine and one-click downloads (resume, sha256, cancel).
+  - **Connect:** the address, the API key, and a curl example.
+- Milestone: scan → open the dashboard → "Runs great" → one click → model ready → first image shows up on the Overview.
+- Done so far (2026-11-16): all of the above in code. Model `variants` in the catalog (Z-Image Turbo bf16). Recommendations and downloads moved from Rust to the host (`local_models.py`), job stats (`stats.py`), the dashboard (`dashboard.py` + `apps/desktop/src/dashboard/`), and the menu-bar icon with the signed login link (`dashboard.rs`).
+- Next: the first real local image with `cargo test real_first_image -- --ignored --nocapture`. It downloads Z-Image Turbo bf16 (about 21 GB) through the host, resuming any `.part` left in the test runtime. Then try Download in the real dashboard.
+- Still to do: smaller variants (fp8, GGUF), which need the host to put file names into the workflow; the HF token; linking existing model folders; a monochrome menu-bar icon.
 
 **Phase 4 – Providers and customization (about 1–2 weeks)**
 - **Providers page:** add a provider, paste a key (keychain), "Test key", pick its models; add a remote ComfyUI or any OpenAI-compatible endpoint; add custom model IDs.
@@ -311,13 +330,13 @@ Each phase ends with a working milestone, and each can ship on its own.
 - Settings: defaults, output folder and filename pattern, idle timeout, theme, Export all / Import.
 - Milestone: a user with no GPU adds an OpenAI-compatible key and a Replicate key, generates with the Cartoon style on both, and a wrong key shows "Provider rejected your key", not a login error.
 
-**Phase 5 – Generate and Styles UI (about 1–2 weeks)**
+**Phase 5 – Generate and Styles UI, in the dashboard (about 1–2 weeks)**
 - **Generate page:** model picker (local and cloud, with the "Cloud" badge), style chips, prompt, queue with progress and cancel, gallery with metadata.
 - **Plain-language controls by default:** Quality (Fast, Standard or Best, from the catalog `quality` presets), Shape (from the model's allowed sizes), and Variation number (the seed, hidden for models without seeds). Sampler, steps and CFG go under an "Advanced" toggle.
 - **Styles page:** editor with live composed-prompt preview, reset, import and export.
 
 **Phase 6 – Server and remote (about 1 week)**
-- LAN toggle, API key management with scopes (`local` by default, `cloud` opt-in, optional daily cap), `tunnel.rs`, and the Server page with endpoint docs and snippets.
+- LAN toggle, API key management with scopes (`local` by default, `cloud` opt-in, optional daily cap), `tunnel.rs`, and the Connect page grows endpoint docs and snippets. A key that survives restarts, so other apps don't need a new one each launch.
 - **Mobile web page:** when LAN or the tunnel is on, the host serves a small phone-friendly Generate page with the same plain-language controls.
   - To pair a phone, scan a QR code on the Server page. The QR holds the URL and a key just for that phone, which can be revoked.
   - The key stays on that phone. The desktop UI still never keeps a key in browser storage (rule 5).
@@ -345,7 +364,8 @@ Each phase ends with a working milestone, and each can ship on its own.
   - each provider adapter against recorded responses (`httpx.MockTransport`, no network in CI)
   - a provider key never appears in logs, errors or any API response
   - a network key without `cloud` scope gets `forbidden` on a cloud model
-- **Rust:** unit tests for `recommend.rs` with fixture profiles (CPU-only, 8 GB NVIDIA, 24 GB NVIDIA, 16 and 64 GB Apple Silicon), for the parsers in `scan.rs` using captured `nvidia-smi`/`sysctl` output, and for the supervisor's idle-stop timer.
+- **Recommendations:** pytest with fixture profiles (CPU-only, 8 GB NVIDIA, 24 GB NVIDIA, 16 and 64 GB Apple Silicon).
+- **Rust:** unit tests for the parsers in `scan.rs` using captured `nvidia-smi`/`sysctl` output, and for the supervisor's idle-stop timer.
 - **Footprint:** CI checks the installer size; a release checklist measures core-tier disk use and host idle RAM on each OS.
 - **End to end, each phase:** a smoke script that waits for `/health`, curls `/v1/images/generations` and checks for a PNG, then curls the tunnel URL with and without a key. Run it in CI where possible, and by hand on real Windows+NVIDIA and Mac hardware. The recommendation thresholds are calibrated from these runs. Cloud providers are smoke-tested by hand with real keys, never in CI.
 - **Compatibility:** point an existing bridge client at the host and generate through `/api/v1/generate` with no other change.

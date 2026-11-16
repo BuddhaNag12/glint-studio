@@ -14,7 +14,8 @@
       {
         "title": "Glint Studio",
         "width": 1100,
-        "height": 720
+        "height": 720,
+        "visible": false
       }
     ],
     "security": {
@@ -35,7 +36,8 @@
       "../../../host/app/": "host/app/",
       "../../../host/pyproject.toml": "host/pyproject.toml",
       "../../../host/providers.example.json": "host/providers.example.json",
-      "../../../catalog/": "catalog/"
+      "../../../catalog/": "catalog/",
+      "../dist/": "dashboard/"
     }
   }
 }

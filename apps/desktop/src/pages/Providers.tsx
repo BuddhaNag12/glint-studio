@@ -121,6 +121,18 @@ export default function Providers({ host: firstHost }: { host: HostInfo }) {
           {busy ? "Working…" : note?.text}
         </p>
       </section>
+
+      <section className="card">
+        <h2>Dashboard</h2>
+        <p className="lead">Activity, models and the address other apps connect to. Glint Studio stays in the menu bar.</p>
+        <button
+          onClick={() =>
+            invoke("open_dashboard").catch((e) => setNote({ ok: false, text: String(e) }))
+          }
+        >
+          Open the dashboard
+        </button>
+      </section>
     </main>
   );
 }

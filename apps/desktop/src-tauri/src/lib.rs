@@ -1,6 +1,5 @@
-mod download;
+mod dashboard;
 mod paths;
-mod recommend;
 mod runtime;
 mod scan;
 mod secrets;
@@ -13,13 +12,30 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(runtime::Runtime::default())
+        .setup(|app| {
+            dashboard::create_tray(app.handle())?;
+            // Installed: live in the menu bar and open the dashboard. First run: the setup window.
+            if runtime::core_installed(app.handle()) {
+                dashboard::hide_window(app.handle());
+                dashboard::open_dashboard_or_setup(app.handle());
+            } else {
+                dashboard::show_window(app.handle());
+            }
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            // Closing the window keeps the host running; Quit is in the menu-bar menu.
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                dashboard::hide_window(window.app_handle());
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             scan::scan_hardware,
             runtime::install_core,
             runtime::install_engine,
             runtime::start_host,
-            recommend::recommend_models,
-            download::download_model,
+            dashboard::open_dashboard,
             secrets::list_providers,
             secrets::set_provider_key,
             secrets::delete_provider_key
@@ -29,7 +45,6 @@ pub fn run() {
         .run(|app, event| {
             if let tauri::RunEvent::Exit = event {
                 app.state::<runtime::Runtime>().supervisor.stop_all();
-                download::stop();
             }
         });
 }
