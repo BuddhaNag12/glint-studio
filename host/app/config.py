@@ -51,12 +51,17 @@ class Settings(BaseSettings):
     hardware_file: Path | None = None  # the app's machine scan, for model recommendations
     stats_db: Path | None = None  # SQLite job log for the dashboard; unset keeps it in memory
     dashboard_dir: Path | None = None  # the built dashboard web page
-    # Host header values to accept; ["*"] accepts any. Guards the dashboard against DNS rebinding.
+    network_file: Path | None = None  # sharing the dashboard asks for, {"lan", "tunnel"}; the app applies it
+    tunnel_file: Path | None = None  # the app's report on the public link, {"status", "url", "error"}
+    serve_on_network: bool = False  # the app started this host on every address, not just 127.0.0.1
+    # Host header values the dashboard pages accept; ["*"] accepts any. Guards them against DNS
+    # rebinding. The API needs the key in a header, so it answers any Host (LAN, tunnel).
     allowed_hosts: Annotated[list[str], NoDecode] = Field(default_factory=lambda: ["*"])
 
     @field_validator(
         "comfyui_dir", "comfyui_temp_dir", "comfyui_output_dir", "user_styles_dir",
-        "providers_file", "models_dir", "hardware_file", "stats_db", "dashboard_dir", mode="before"
+        "providers_file", "models_dir", "hardware_file", "stats_db", "dashboard_dir", "network_file", "tunnel_file",
+        mode="before",
     )
     @classmethod
     def parse_optional_path(cls, value: Any) -> Any:

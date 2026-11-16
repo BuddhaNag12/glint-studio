@@ -1,4 +1,5 @@
 mod dashboard;
+mod network;
 mod paths;
 mod runtime;
 mod scan;
@@ -14,6 +15,7 @@ pub fn run() {
         .manage(runtime::Runtime::default())
         .setup(|app| {
             dashboard::create_tray(app.handle())?;
+            network::spawn(app.handle().clone());
             // Installed: live in the menu bar and open the dashboard. First run: the setup window.
             if runtime::core_installed(app.handle()) {
                 dashboard::hide_window(app.handle());

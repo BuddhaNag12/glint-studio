@@ -66,6 +66,12 @@ pub struct HostInfo {
     pub url: String,
     /// New every launch; the UI keeps it in memory only.
     pub api_key: String,
+    /// Bound to every address (the LAN), not just 127.0.0.1.
+    #[serde(skip)]
+    pub(crate) lan: bool,
+    /// The ComfyUI this host talks to, kept when only the host restarts.
+    #[serde(skip)]
+    comfy_port: Option<u16>,
 }
 
 /// Managed state. The locks stop a second call (React StrictMode runs effects twice in dev)
@@ -119,12 +125,15 @@ pub async fn ensure_host(app: &AppHandle) -> Result<HostInfo, String> {
     let supervisor = state.supervisor.clone();
     let paths = app_paths(app)?;
     let engine = engine_installed(&paths);
+    let lan = crate::network::wanted(&paths).lan;
+    let running = |name| supervisor.status(name) == ProcessStatus::Running;
     if let Some(info) = host.as_ref() {
-        let running = |name| supervisor.status(name) == ProcessStatus::Running;
-        if running(HOST) && (!engine || running(COMFYUI)) {
+        if running(HOST) && info.lan == lan && (!engine || running(COMFYUI)) {
             return Ok(info.clone());
         }
     }
+    // A LAN switch restarts the running host; free its port first so it keeps the same one.
+    supervisor.stop(HOST);
     if !paths.venv_python().exists() {
         return Err("The runtime isn't installed yet.".into());
     }
@@ -137,7 +146,7 @@ pub async fn ensure_host(app: &AppHandle) -> Result<HostInfo, String> {
         fs::create_dir_all(&dir).map_err(|e| format!("Couldn't create {}: {e}", dir.display()))?;
     }
     // The same address and key as last time, so apps set up with them and open dashboard tabs keep working.
-    let port = host_port(host.as_ref()).map_err(|e| e.to_string())?;
+    let port = host_port(host.as_ref(), lan).map_err(|e| e.to_string())?;
     let api_key = match host.as_ref() {
         Some(info) => info.api_key.clone(),
         None => crate::secrets::host_api_key().or_else(|e| {
@@ -145,15 +154,24 @@ pub async fn ensure_host(app: &AppHandle) -> Result<HostInfo, String> {
             new_key()
         })?,
     };
-    let info = HostInfo { url: format!("http://127.0.0.1:{port}"), api_key };
-    let mut spec = host_spec(&paths, &resource_dir(app)?, port, &info.api_key);
+    let mut info = HostInfo { url: format!("http://127.0.0.1:{port}"), api_key, lan, comfy_port: None };
+    let mut spec = host_spec(&paths, &resource_dir(app)?, port, &info.api_key, lan);
     let mut waits = vec![(HOST, HOST_START_TIMEOUT, spec.log_file.clone())];
     if engine {
-        let comfy_port = free_port().map_err(|e| e.to_string())?;
+        // A ComfyUI that's up (or on its way) stays: only the host needs restarting.
+        let comfy_up = matches!(supervisor.status(COMFYUI), ProcessStatus::Running | ProcessStatus::Starting);
+        let reuse = host.as_ref().and_then(|i| i.comfy_port).filter(|_| comfy_up);
+        let comfy_port = match reuse {
+            Some(port) => port,
+            None => free_port().map_err(|e| e.to_string())?,
+        };
         point_host_at_comfyui(&mut spec, &paths, comfy_port);
+        info.comfy_port = Some(comfy_port);
         let comfy = comfyui_spec(&paths, comfy_port);
         waits.push((COMFYUI, COMFYUI_START_TIMEOUT, comfy.log_file.clone()));
-        supervisor.start(comfy).map_err(|e| format!("Couldn't start ComfyUI: {e}"))?;
+        if reuse.is_none() {
+            supervisor.start(comfy).map_err(|e| format!("Couldn't start ComfyUI: {e}"))?;
+        }
     }
     // After the ComfyUI vars, so a provider key can't take their names.
     spec.env.extend(crate::secrets::host_env(&paths, &resource_dir(app)?, &spec.env));
@@ -177,6 +195,12 @@ pub fn core_installed(app: &AppHandle) -> bool {
 }
 
 impl Runtime {
+    /// The started host (None before the first start), or Err while a start or an install is under way.
+    pub(crate) fn host_now(&self) -> Result<Option<HostInfo>, ()> {
+        let _installing = self.installing.try_lock().map_err(|_| ())?;
+        self.host.try_lock().map(|h| h.clone()).map_err(|_| ())
+    }
+
     /// One line for the menu-bar menu.
     pub fn status_line(&self) -> &'static str {
         use ProcessStatus::*;
@@ -362,10 +386,18 @@ fn ensure_uv(paths: &Paths) -> Result<(), String> {
     Ok(())
 }
 
-/// Downloads `url` into a fresh runtime/download folder, checks its sha256 and unpacks it there.
+/// Downloads `url` into a fresh runtime/download-<what> folder, checks its sha256 and unpacks it there.
 /// Returns that folder; the caller moves out what it needs and deletes it.
 fn fetch_and_unpack(paths: &Paths, url: &str, sha: &str, what: &str) -> Result<PathBuf, String> {
-    let tmp = paths.runtime().join("download");
+    let archive = fetch(paths, url, sha, what)?;
+    let tmp = archive.parent().unwrap().to_path_buf();
+    run(Command::new(system_tool("tar")).arg("-xf").arg(&archive).arg("-C").arg(&tmp))?;
+    Ok(tmp)
+}
+
+/// Downloads `url` into a fresh folder of its own (two downloads at once don't meet) and checks its sha256.
+pub(crate) fn fetch(paths: &Paths, url: &str, sha: &str, what: &str) -> Result<PathBuf, String> {
+    let tmp = paths.runtime().join(format!("download-{}", what.to_lowercase().replace(' ', "-")));
     let _ = fs::remove_dir_all(&tmp);
     fs::create_dir_all(&tmp).map_err(|e| e.to_string())?;
     let archive = tmp.join(url.rsplit('/').next().unwrap_or("archive"));
@@ -376,8 +408,7 @@ fn fetch_and_unpack(paths: &Paths, url: &str, sha: &str, what: &str) -> Result<P
     if got != sha {
         return Err(format!("The {what} download is corrupt (sha256 {got}, expected {sha}). Try again."));
     }
-    run(Command::new(system_tool("tar")).arg("-xf").arg(&archive).arg("-C").arg(&tmp))?;
-    Ok(tmp)
+    Ok(archive)
 }
 
 /// uv with everything it writes (Pythons, cache) kept inside our runtime folder, and the user's
@@ -404,7 +435,7 @@ pub(crate) fn system_tool(name: &str) -> PathBuf {
 }
 
 /// Runs to completion; on failure the error carries the tool's last lines of stderr.
-fn run(cmd: &mut Command) -> Result<(), String> {
+pub(crate) fn run(cmd: &mut Command) -> Result<(), String> {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -434,7 +465,7 @@ pub(crate) fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-fn find_file(dir: &Path, name: &str) -> Option<PathBuf> {
+pub(crate) fn find_file(dir: &Path, name: &str) -> Option<PathBuf> {
     for entry in fs::read_dir(dir).ok()?.flatten() {
         let path = entry.path();
         if path.is_dir() {
@@ -451,12 +482,13 @@ fn find_file(dir: &Path, name: &str) -> Option<PathBuf> {
 /// The host's usual port; another one only when something else holds it.
 const HOST_PORT: u16 = 7788;
 
-fn host_port(last: Option<&HostInfo>) -> io::Result<u16> {
+fn host_port(last: Option<&HostInfo>, lan: bool) -> io::Result<u16> {
+    let addr = if lan { "0.0.0.0" } else { "127.0.0.1" };
     let last = last.and_then(|i| i.url.rsplit(':').next()?.parse().ok());
     // shortcut: probe-then-release can race another app for the port; the host then fails to start and the
     // next try picks a free one. Pass the bound socket to the host if that ever shows up.
     for port in last.into_iter().chain([HOST_PORT]) {
-        if TcpListener::bind(("127.0.0.1", port)).is_ok() {
+        if TcpListener::bind((addr, port)).is_ok() {
             return Ok(port);
         }
     }
@@ -479,7 +511,8 @@ fn webview_origins() -> &'static str {
 }
 
 /// `resources` holds `host/` (the app package and pyproject.toml), `catalog/` and `dashboard/` (the built UI).
-pub fn host_spec(paths: &Paths, resources: &Path, port: u16, api_key: &str) -> ProcessSpec {
+/// `lan` binds every address; the API key is required either way, and the dashboard pages stay local-only.
+pub fn host_spec(paths: &Paths, resources: &Path, port: u16, api_key: &str, lan: bool) -> ProcessSpec {
     let url = format!("http://127.0.0.1:{port}");
     let path = |p: PathBuf| p.to_string_lossy().into_owned();
     let env = [
@@ -494,7 +527,10 @@ pub fn host_spec(paths: &Paths, resources: &Path, port: u16, api_key: &str) -> P
         ("HARDWARE_FILE", path(paths.hardware_file())),
         ("STATS_DB", path(paths.stats_db())),
         ("DASHBOARD_DIR", path(resources.join("dashboard"))),
-        // The dashboard is a browser page; refusing other Host headers stops DNS rebinding.
+        ("NETWORK_FILE", path(paths.network_file())),
+        ("TUNNEL_FILE", path(paths.tunnel_file())),
+        ("SERVE_ON_NETWORK", lan.to_string()),
+        // The dashboard pages run on a login cookie; refusing other Host headers there stops DNS rebinding.
         ("ALLOWED_HOSTS", "127.0.0.1,localhost".into()),
         ("PYTHONDONTWRITEBYTECODE", "1".into()), // the app bundle is read-only
         ("PYTHONUNBUFFERED", "1".into()),        // logs reach host.log as they happen
@@ -503,7 +539,8 @@ pub fn host_spec(paths: &Paths, resources: &Path, port: u16, api_key: &str) -> P
         name: HOST.into(),
         program: paths.venv_python(),
         // No access log: the supervisor's health check alone would add a line every second.
-        args: ["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", &port.to_string(), "--no-access-log"]
+        // Uvicorn trusts X-Forwarded-Proto from 127.0.0.1 only: the tunnel, so its image links are https.
+        args: ["-m", "uvicorn", "app.main:app", "--host", if lan { "0.0.0.0" } else { "127.0.0.1" }, "--port", &port.to_string(), "--no-access-log"]
             .map(String::from)
             .to_vec(),
         cwd: Some(resources.join("host")),
@@ -530,7 +567,7 @@ fn wait_running(supervisor: &Supervisor, name: &str, timeout: Duration) -> Resul
     }
 }
 
-fn log_tail(path: &Path, n: usize) -> String {
+pub(crate) fn log_tail(path: &Path, n: usize) -> String {
     let text = fs::read_to_string(path).unwrap_or_default();
     let lines: Vec<&str> = text.lines().collect();
     lines[lines.len().saturating_sub(n)..].join("\n")
@@ -582,12 +619,12 @@ mod tests {
 
     #[test]
     fn host_port_keeps_the_last_port_while_it_is_free() {
-        let info = |port: u16| HostInfo { url: format!("http://127.0.0.1:{port}"), api_key: String::new() };
+        let info = |port: u16| HostInfo { url: format!("http://127.0.0.1:{port}"), api_key: String::new(), lan: false, comfy_port: None };
         let free = free_port().unwrap();
-        assert_eq!(host_port(Some(&info(free))).unwrap(), free);
+        assert_eq!(host_port(Some(&info(free)), false).unwrap(), free);
         let held = TcpListener::bind("127.0.0.1:0").unwrap();
         let busy = held.local_addr().unwrap().port();
-        let port = host_port(Some(&info(busy))).unwrap();
+        let port = host_port(Some(&info(busy)), false).unwrap();
         assert_ne!(port, busy);
         TcpListener::bind(("127.0.0.1", port)).unwrap();
     }
@@ -603,7 +640,7 @@ mod tests {
     #[test]
     fn host_spec_points_at_app_data_and_resources() {
         let paths = Paths { root: PathBuf::from("/data") };
-        let spec = host_spec(&paths, Path::new("/res"), 4321, "k");
+        let spec = host_spec(&paths, Path::new("/res"), 4321, "k", false);
         let env = |k: &str| spec.env.iter().find(|(key, _)| key == k).map(|(_, v)| v.as_str());
         assert_eq!(env("API_KEY"), Some("k"));
         assert_eq!(env("PUBLIC_BASE_URL"), Some("http://127.0.0.1:4321"));
@@ -615,6 +652,13 @@ mod tests {
         assert_eq!(env("ALLOWED_HOSTS"), Some("127.0.0.1,localhost"));
         assert_eq!(spec.health_url.as_deref(), Some("http://127.0.0.1:4321/livez"));
         assert!(spec.args.contains(&"4321".to_string()));
+        assert!(spec.args.contains(&"127.0.0.1".to_string()));
+        assert_eq!(env("SERVE_ON_NETWORK"), Some("false"));
+        assert_eq!(env("NETWORK_FILE").map(PathBuf::from), Some(PathBuf::from("/data").join("network.json")));
+
+        let lan = host_spec(&paths, Path::new("/res"), 4321, "k", true);
+        assert!(lan.args.contains(&"0.0.0.0".to_string()));
+        assert!(lan.env.contains(&("SERVE_ON_NETWORK".into(), "true".into())));
     }
 
     #[test]
@@ -661,7 +705,7 @@ mod tests {
 
         let supervisor = Supervisor::new();
         let port = free_port().unwrap();
-        supervisor.start(host_spec(&paths, &repo, port, "test-key")).unwrap();
+        supervisor.start(host_spec(&paths, &repo, port, "test-key", false)).unwrap();
         let result = wait_running(&supervisor, HOST, HOST_START_TIMEOUT);
         println!("host on :{port} -> {result:?}\n{}", log_tail(&paths.logs().join("host.log"), 15));
         supervisor.stop_all();
@@ -695,7 +739,7 @@ mod tests {
         fs::create_dir_all(paths.models()).unwrap();
         fs::create_dir_all(paths.comfyui_data().join("custom_nodes")).unwrap();
         let comfy_port = free_port().unwrap();
-        let mut host = host_spec(paths, repo, free_port().unwrap(), "test-key");
+        let mut host = host_spec(paths, repo, free_port().unwrap(), "test-key", false);
         let url = host.health_url.clone().unwrap().replace("/livez", "");
         point_host_at_comfyui(&mut host, paths, comfy_port);
         supervisor.start(comfyui_spec(paths, comfy_port)).unwrap();

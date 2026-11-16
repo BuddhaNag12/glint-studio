@@ -59,7 +59,7 @@ own window is only for first-run setup, repair, and cloud keys.
 │                          secrets.rs   OS keychain    │
 │                          dashboard.rs tray + signed  │
 │                                       login link     │
-│                          tunnel.rs    (Phase 6)      │
+│                          network.rs   LAN, tunnel    │
 └──────────────┬───────────────────────────────────────┘
                │ starts it; opens /login?exp&sig in the browser
         ┌──────▼──────────────────────┐  provider interface
@@ -95,7 +95,7 @@ glint-studio/
       dashboard/ Overview, Generate, Styles, Models, Connect (served by the host; dashboard.html entry)
     src-tauri/src/
       main.rs  scan.rs  runtime.rs  supervisor.rs  secrets.rs
-      dashboard.rs  paths.rs  tunnel.rs (Phase 6)
+      dashboard.rs  paths.rs  network.rs
   host/                        Python package (from comfy-api-bridge)
     app/
       main.py                  routes
@@ -345,6 +345,12 @@ Each phase ends with a working milestone, and each can ship on its own.
   - To pair a phone, scan a QR code on the Server page. The QR holds the URL and a key just for that phone, which can be revoked.
   - The key stays on that phone. The desktop UI still never keeps a key in browser storage (rule 5).
 - Milestone: a phone on cellular generates through the tunnel URL with a key, gets a 401 without one, and gets a 403 on a cloud model when its key has no `cloud` scope.
+- Done 2026-11-16: the LAN toggle and the public link, on the Connect page.
+  - The dashboard writes `network.json` through the host (`PUT /api/v1/network`, from this computer only). `network.rs` in the app applies it every 2 s.
+  - **LAN:** restarts only the host, bound to 0.0.0.0 on the same port. ComfyUI keeps running. The change is refused while images are in progress. The setting is kept between launches.
+  - **Public link:** a Cloudflare quick tunnel. cloudflared is downloaded on first use and checked against a pinned sha256. The link is read from its log and reported back through `tunnel.json`. It is never turned on at launch.
+  - **Security:** the API needs the key from every address. The cookie pages (`/`, `/login`, `/api/v1/dashboard/connect`) still refuse any Host but `127.0.0.1` and `localhost`. Dashboard sessions are signed with the key, so they survive a host restart.
+  - **Image links:** they use the address the caller used, and the tunnel gets https.
 
 **Phase 7 – Release (about 1 week)**
 - Signing: macOS notarization; Windows code signing (SignPath offers free signing for open-source projects).

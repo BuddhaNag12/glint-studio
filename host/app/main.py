@@ -25,7 +25,6 @@ from fastapi import (
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 
 from app.auth import (
@@ -95,6 +94,7 @@ def _prune_expired_output_files(output_dir: Path, ttl_seconds: int) -> None:
 
 def _build_generated_image(
     settings: Settings,
+    base: str,
     job_id: str,
     index: int,
     title_slug: str,
@@ -111,7 +111,7 @@ def _build_generated_image(
         settings.output_dir.mkdir(parents=True, exist_ok=True)
         _prune_expired_output_files(settings.output_dir, settings.image_url_ttl_seconds)
         (settings.output_dir / stored_filename).write_bytes(image.content)
-        base_url = f"{settings.public_base_url}/api/v1/images/{stored_filename}"
+        base_url = f"{base}/api/v1/images/{stored_filename}"
         if settings.sign_image_urls:
             exp, sig = build_signed_image_query(
                 stored_filename,
@@ -193,7 +193,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 keep_seconds=resolved_settings.image_url_ttl_seconds,  # finished jobs live as long as their URLs
                 on_finish=app.state.stats.record,
             )
-            app.state.sessions = Sessions()
+            app.state.sessions = Sessions(resolved_settings.api_key.strip())
             # Downloads get their own client: no overall timeout on a 20 GB file.
             async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0)) as download_client:
                 app.state.downloads = Downloads(download_client, resolved_settings.models_dir or Path("models"))
@@ -224,9 +224,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.add_exception_handler(RequestValidationError, validation_error_handler)
     app.include_router(dashboard_router)
-    if resolved_settings.allowed_hosts != ["*"]:
-        # A web page on another site can't reach the host by renaming 127.0.0.1 (DNS rebinding).
-        app.add_middleware(TrustedHostMiddleware, allowed_hosts=resolved_settings.allowed_hosts)
 
     app.add_middleware(
         CORSMiddleware,
@@ -383,8 +380,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         prompt = compose(model, body.prompt, style=style, negative=body.negative_prompt)
         return ProviderRequest(model, prompt, params, body.seed), style
 
-    def _image_data(cfg: Settings, job: Job) -> list[ImageData]:
-        """The finished job's images as OpenAI-style data; url files are written once."""
+    def _base(request: Request) -> str:
+        """The address the client used (127.0.0.1, a LAN address, or the tunnel's https name), so
+        image links work for it. Uvicorn trusts X-Forwarded-Proto only from 127.0.0.1 (the tunnel)."""
+        return str(request.base_url).rstrip("/")
+
+    def _image_data(cfg: Settings, base: str, job: Job) -> list[ImageData]:
+        """The finished job's images as OpenAI-style data; url files are written once, for the first asker."""
         if job.data is None and job.result is not None:
             if job.response_format == "b64_json":
                 job.data = [
@@ -393,7 +395,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             else:
                 slug = title_to_filename_slug(extract_image_title(job.prompt))
                 job.data = [
-                    ImageData(url=_build_generated_image(cfg, job.id, i, slug, img, "url").url)
+                    ImageData(url=_build_generated_image(cfg, base, job.id, i, slug, img, "url").url)
                     for i, img in enumerate(job.result.images, start=1)
                 ]
         return job.data or []
@@ -409,7 +411,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         jobs: JobQueue = request.app.state.jobs
         job = _submit(request, *_plan_images(request, body), body.prompt, body.response_format)
         result = await jobs.wait(job)
-        data = _image_data(request.app.state.settings, job)
+        data = _image_data(request.app.state.settings, _base(request), job)
         return ImagesResponse(created=int(time.time()), data=data, model=job.model, seed=result.seed)
 
     @app.post("/api/v1/jobs", status_code=status.HTTP_202_ACCEPTED, dependencies=[Depends(require_api_key)])
@@ -426,7 +428,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         view = jobs.view(job)
         if job.status == "done":
             view["seed"] = job.result.seed if job.result else None
-            view["data"] = [d.model_dump(exclude_none=True) for d in _image_data(request.app.state.settings, job)]
+            view["data"] = [d.model_dump(exclude_none=True) for d in _image_data(request.app.state.settings, _base(request), job)]
         return view
 
     @app.delete("/api/v1/jobs/{job_id}", dependencies=[Depends(require_api_key)])
@@ -539,7 +541,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         response.headers["X-Image-Title"] = header_title
         generated = [
-            _build_generated_image(cfg, job_id, idx, title_slug, img, body.response_format)
+            _build_generated_image(cfg, _base(request), job_id, idx, title_slug, img, body.response_format)
             for idx, img in enumerate(raw_images, start=1)
         ]
         primary = generated[0]

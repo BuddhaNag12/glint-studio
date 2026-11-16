@@ -3,6 +3,12 @@
 
 export type Connection = { url: string; api_key: string };
 
+// Mirrors GET /api/v1/network in host/app/dashboard.py. lan.on is what was asked, lan.active what the host does.
+export type Network = {
+  lan: { on: boolean; active: boolean; url: string | null };
+  tunnel: { on: boolean; status: "off" | "downloading" | "starting" | "running" | "failed"; url: string | null; error: string | null };
+};
+
 let conn: Connection | null = null;
 
 export async function connect(): Promise<Connection> {

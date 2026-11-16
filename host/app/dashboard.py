@@ -10,12 +10,16 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
-import secrets
+import json
+import os
+import socket
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from pydantic import BaseModel
 
 from app.auth import require_api_key
 from app.catalog import CatalogModel
@@ -38,26 +42,39 @@ def login_signature(api_key: str, exp: int) -> str:
 
 
 class Sessions:
-    # shortcut: sessions live in memory, so a host restart means opening the dashboard from the
-    # menu again; persist them if that gets annoying.
-    def __init__(self) -> None:
-        self.used: dict[str, int] = {}  # login signatures already spent, until they expire
-        self.ids: set[str] = set()
+    """A session is its start time signed with the API key, so it outlives a host restart (turning
+    network sharing on restarts the host). Rotating the key ends every session."""
 
-    def login(self, api_key: str, exp: int, sig: str, now: float | None = None) -> str | None:
+    def __init__(self, api_key: str) -> None:
+        self.key = api_key.encode()
+        self.used: dict[str, int] = {}  # login signatures already spent, until they expire
+
+    def _sign(self, issued: str) -> str:
+        return hmac.new(self.key, f"glint-dashboard-session:{issued}".encode(), hashlib.sha256).hexdigest()
+
+    def login(self, exp: int, sig: str, now: float | None = None) -> str | None:
         now = time.time() if now is None else now
         self.used = {s: e for s, e in self.used.items() if e >= now}
-        if not api_key or exp < now or exp > now + LOGIN_TTL or sig in self.used:
+        if not self.key or exp < now or exp > now + LOGIN_TTL or sig in self.used:
             return None
-        if not hmac.compare_digest(sig, login_signature(api_key, exp)):
+        if not hmac.compare_digest(sig, login_signature(self.key.decode(), exp)):
             return None
         self.used[sig] = exp
-        session = secrets.token_urlsafe(32)
-        self.ids.add(session)
-        return session
+        issued = str(int(now))
+        return f"{issued}.{self._sign(issued)}"
 
     def valid(self, session: str | None) -> bool:
-        return bool(session) and session in self.ids
+        issued, _, sig = (session or "").partition(".")
+        return bool(self.key and issued and sig) and hmac.compare_digest(sig, self._sign(issued))
+
+
+def local_only(request: Request) -> None:
+    """The cookie pages answer only to this computer's names: a site renamed to 127.0.0.1 (DNS
+    rebinding), a LAN address or the tunnel can't reach them."""
+    allowed = request.app.state.settings.allowed_hosts
+    host = request.headers.get("host", "").rsplit(":", 1)[0]
+    if allowed != ["*"] and host not in allowed:
+        raise HTTPException(400, "Invalid host header")
 
 
 GONE = """<!doctype html><meta charset="utf-8"><title>Glint Studio</title>
@@ -74,9 +91,9 @@ def _page(request: Request) -> Path:
     return page_dir / "dashboard.html"
 
 
-@router.get("/login", include_in_schema=False)
+@router.get("/login", include_in_schema=False, dependencies=[Depends(local_only)])
 async def login(request: Request, exp: int = Query(...), sig: str = Query(...)):
-    session = request.app.state.sessions.login(request.app.state.settings.api_key.strip(), exp, sig)
+    session = request.app.state.sessions.login(exp, sig)
     if session is None:
         return HTMLResponse(GONE, status_code=403)
     resp = RedirectResponse("/", status_code=303)
@@ -84,7 +101,7 @@ async def login(request: Request, exp: int = Query(...), sig: str = Query(...)):
     return resp
 
 
-@router.get("/", include_in_schema=False)
+@router.get("/", include_in_schema=False, dependencies=[Depends(local_only)])
 async def dashboard_page(request: Request):
     page = _page(request)
     if not request.app.state.sessions.valid(request.cookies.get(COOKIE)):
@@ -101,9 +118,9 @@ async def dashboard_asset(name: str, request: Request):
     return FileResponse(path, headers={"Cache-Control": "public, max-age=31536000, immutable"})
 
 
-@router.get("/api/v1/dashboard/connect", include_in_schema=False)
+@router.get("/api/v1/dashboard/connect", include_in_schema=False, dependencies=[Depends(local_only)])
 async def connect(request: Request) -> dict:
-    """The cookie in, the API key out: same-site only, and the Host header is checked upstream."""
+    """The cookie in, the API key out: same-site only, and only under this computer's names."""
     if not request.app.state.sessions.valid(request.cookies.get(COOKIE)):
         raise ApiError("unauthorized", "Open the dashboard from the Glint Studio menu.")
     cfg = request.app.state.settings
@@ -193,3 +210,74 @@ async def system(request: Request) -> dict:
         "hardware": hw,
         "models_bytes": models_bytes,
     }
+
+
+# --- sharing on the network and the public link; the desktop app does the work ---
+
+class NetworkRequest(BaseModel):
+    lan: bool | None = None
+    tunnel: bool | None = None
+
+
+def _read_json(path: Path | None) -> dict:
+    try:
+        data = json.loads(path.read_text()) if path else {}
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def lan_address() -> str | None:
+    """This computer's address on the network it reaches the internet through."""
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        try:
+            s.connect(("192.0.2.1", 9))  # UDP: picks the route, sends nothing
+            return s.getsockname()[0]
+        except OSError:
+            return None
+
+
+def _network_file(request: Request) -> Path:
+    path = request.app.state.settings.network_file
+    if path is None:
+        raise ApiError("not_found", "Sharing is set up by the Glint Studio app; this host runs on its own.")
+    return path
+
+
+@router.get("/api/v1/network", dependencies=[Depends(require_api_key)])
+async def network(request: Request) -> dict:
+    cfg = request.app.state.settings
+    wanted = _read_json(_network_file(request))
+    tunnel = _read_json(cfg.tunnel_file)
+    address = lan_address() if cfg.serve_on_network else None
+    port = urlsplit(cfg.public_base_url).port
+    return {
+        "lan": {
+            "on": bool(wanted.get("lan")),
+            "active": cfg.serve_on_network,
+            "url": f"http://{address}:{port}" if address else None,
+        },
+        "tunnel": {
+            "on": bool(wanted.get("tunnel")),
+            "status": tunnel.get("status", "off"),
+            "url": tunnel.get("url"),
+            "error": tunnel.get("error"),
+        },
+    }
+
+
+@router.put("/api/v1/network", dependencies=[Depends(require_api_key), Depends(local_only)])
+async def set_network(body: NetworkRequest, request: Request) -> dict:
+    """Changed only from this computer. Network sharing restarts the host, so not mid-job."""
+    path = _network_file(request)
+    wanted = {"lan": False, "tunnel": False, **_read_json(path)}
+    if body.lan is not None and body.lan != wanted["lan"]:
+        if any(j.status in ("queued", "running") for j in request.app.state.jobs.jobs.values()):
+            raise ApiError("bad_params", "Wait for the images in progress to finish; this restarts the host.")
+        wanted["lan"] = body.lan
+    if body.tunnel is not None:
+        wanted["tunnel"] = body.tunnel
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(wanted))
+    os.replace(tmp, path)  # the app never reads half a file
+    return await network(request)

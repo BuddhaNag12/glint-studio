@@ -231,6 +231,19 @@ def test_generate_default_returns_raw_image_binary(tmp_path: Path) -> None:
         assert list(output_dir.iterdir()) == []
 
 
+def test_image_links_use_the_address_the_caller_used(tmp_path: Path) -> None:
+    # A phone on the LAN or through the tunnel can't open 127.0.0.1; it gets the address it called.
+    app, fake_comfy, _ = _setup_test_app(tmp_path)
+    with TestClient(app) as client:
+        app.state.providers["comfyui"].client = fake_comfy
+        res = client.post(
+            "/api/v1/generate",
+            headers={"Authorization": "Bearer test-secret-key", "Host": "192.168.1.20:7788"},
+            json={"prompt": "a golden teapot", "response_format": "url"},
+        )
+        assert res.json()["image_url"].startswith("http://192.168.1.20:7788/api/v1/images/")
+
+
 def test_generate_both_serves_signed_image_url_and_base64(tmp_path: Path) -> None:
     app, fake_comfy, output_dir = _setup_test_app(tmp_path)
     with TestClient(app) as client:

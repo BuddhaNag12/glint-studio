@@ -155,15 +155,18 @@ def test_one_download_at_a_time(tmp_path: Path) -> None:
 # --- dashboard login ---
 
 def test_login_links_are_signed_short_lived_and_single_use() -> None:
-    s, now = Sessions(), time.time()
+    s, now = Sessions("key"), time.time()
     exp = int(now) + 30
-    assert s.login("key", exp, "0" * 64, now) is None
-    assert s.login("key", int(now) - 1, login_signature("key", int(now) - 1), now) is None  # expired
-    assert s.login("key", int(now) + 3600, login_signature("key", int(now) + 3600), now) is None  # too long
-    session = s.login("key", exp, login_signature("key", exp), now)
+    assert s.login(exp, "0" * 64, now) is None
+    assert s.login(int(now) - 1, login_signature("key", int(now) - 1), now) is None  # expired
+    assert s.login(int(now) + 3600, login_signature("key", int(now) + 3600), now) is None  # too long
+    session = s.login(exp, login_signature("key", exp), now)
     assert session and s.valid(session)
-    assert s.login("key", exp, login_signature("key", exp), now) is None  # spent
-    assert not s.valid("made-up") and not s.valid(None)
+    assert s.login(exp, login_signature("key", exp), now) is None  # spent
+    assert not s.valid("made-up") and not s.valid(None) and not s.valid(".") and not s.valid("1.abc")
+    assert Sessions("key").valid(session)  # a restarted host still knows it
+    assert not Sessions("new-key").valid(session)  # a new key ends it
+    assert Sessions("").login(exp, login_signature("", exp), now) is None
 
 
 def test_login_signature_matches_the_desktop_app() -> None:
@@ -191,8 +194,43 @@ def test_dashboard_login_cookie_and_connect(tmp_path: Path) -> None:
         assert client.get("/api/v1/dashboard/connect").json() == {
             "url": "http://testserver", "api_key": "test-secret-key"
         }
-        # Another host name for the same address (DNS rebinding) is turned away.
-        assert client.get("/", headers={"Host": "evil.test"}).status_code == 400
+        # Another host name for the same address (DNS rebinding) is turned away from the cookie pages,
+        # while the API, which needs the key, answers any name (a LAN address, the tunnel).
+        evil = {"Host": "evil.test"}
+        assert client.get("/", headers=evil).status_code == 400
+        assert client.get("/api/v1/dashboard/connect", headers=evil).status_code == 400
+        assert client.get("/api/v1/styles", headers={**evil, **AUTH}).status_code == 200
+
+
+def test_network_settings_for_the_app(tmp_path: Path) -> None:
+    net, tunnel = tmp_path / "network.json", tmp_path / "tunnel.json"
+    app, _, _ = _setup_test_app(
+        tmp_path, network_file=net, tunnel_file=tunnel, allowed_hosts=["testserver"], public_base_url="http://h:7788"
+    )
+    with TestClient(app) as client:
+        view = client.get("/api/v1/network", headers=AUTH).json()
+        assert view["lan"] == {"on": False, "active": False, "url": None}
+        assert view["tunnel"] == {"on": False, "status": "off", "url": None, "error": None}
+        assert client.get("/api/v1/network").status_code == 401
+
+        res = client.put("/api/v1/network", json={"tunnel": True}, headers=AUTH)
+        assert res.json()["tunnel"]["on"] and json.loads(net.read_text()) == {"lan": False, "tunnel": True}
+        tunnel.write_text(json.dumps({"status": "running", "url": "https://x.trycloudflare.com", "error": None}))
+        client.put("/api/v1/network", json={"lan": True}, headers=AUTH)
+        assert json.loads(net.read_text()) == {"lan": True, "tunnel": True}
+        view = client.get("/api/v1/network", headers=AUTH).json()
+        assert view["lan"]["on"] and not view["lan"]["active"]  # until the app restarts the host
+        assert view["tunnel"]["url"] == "https://x.trycloudflare.com"
+        # Only from this computer, not over the LAN or the tunnel.
+        assert client.put("/api/v1/network", json={"lan": False}, headers={**AUTH, "Host": "x.trycloudflare.com"}).status_code == 400
+
+        app.state.settings.serve_on_network = True
+        url = client.get("/api/v1/network", headers=AUTH).json()["lan"]["url"]
+        assert url is None or url.endswith(":7788")  # None when the test machine is offline
+
+    app, _, _ = _setup_test_app(tmp_path)
+    with TestClient(app) as client:  # a host run on its own has nothing to share through
+        assert client.get("/api/v1/network", headers=AUTH).json()["error"]["code"] == "not_found"
 
 
 def test_stats_and_system(tmp_path: Path) -> None:

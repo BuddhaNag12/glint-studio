@@ -57,6 +57,17 @@ impl Paths {
     pub fn stats_db(&self) -> PathBuf {
         self.root.join("stats.db")
     }
+    /// What the dashboard asks to share ({"lan", "tunnel"}); the host writes it, the app applies it.
+    pub fn network_file(&self) -> PathBuf {
+        self.root.join("network.json")
+    }
+    /// The app's report on the public link, for the host to show.
+    pub fn tunnel_file(&self) -> PathBuf {
+        self.root.join("tunnel.json")
+    }
+    pub fn cloudflared(&self) -> PathBuf {
+        self.runtime().join("bin").join(exe("cloudflared"))
+    }
     pub fn logs(&self) -> PathBuf {
         self.root.join("logs")
     }
