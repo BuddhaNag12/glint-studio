@@ -17,7 +17,7 @@ def test_image_kind_and_args() -> None:
     assert smoke.image_kind(b"<html>") is None
     args = smoke.parse_args(["--api-key", "k", "--model", "a", "--model", "b", "--skip-legacy"])
     assert args.model == ["a", "b"] and args.skip_legacy and args.timeout == 300
-    assert smoke.events_url("https://h:9/", "a b") == "wss://h:9/api/v1/events?api_key=a%20b"
+    assert smoke.events_url("https://h:9/") == "wss://h:9/api/v1/events"
 
 
 def test_smoke_checks_pass_against_the_app(tmp_path) -> None:

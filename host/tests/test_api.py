@@ -396,6 +396,19 @@ def test_generate_default_rejects_params_outside_the_model_limits(tmp_path: Path
         assert fake_comfy.last_workflow is None
 
 
+def test_images_take_steps_and_cfg_within_the_model_limits(tmp_path: Path) -> None:
+    app, fake_comfy, _ = _setup_test_app(tmp_path)
+    with TestClient(app, headers={"Authorization": "Bearer test-secret-key"}) as client:
+        app.state.providers["comfyui"].client = fake_comfy
+        res = client.post("/v1/images/generations", json={"prompt": "a fox", "steps": 9, "cfg": 1.5})
+        assert res.status_code == 200
+        inputs = [n["inputs"] for n in fake_comfy.last_workflow.values()]
+        assert any(i.get("steps") == 9 for i in inputs) and any(i.get("cfg") == 1.5 for i in inputs)
+        for extra in ({"steps": 21}, {"cfg": 2.5}):  # Z-Image Turbo allows steps 1-20, cfg 1-2
+            res = client.post("/api/v1/jobs", json={"prompt": "a fox", **extra})
+            assert res.status_code == 422 and res.json()["error"]["code"] == "bad_params"
+
+
 def test_models_and_styles_endpoints(tmp_path: Path) -> None:
     app, _, _ = _setup_test_app(tmp_path)
     with TestClient(app) as client:

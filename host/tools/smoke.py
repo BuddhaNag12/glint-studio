@@ -8,7 +8,7 @@ import json
 import os
 import sys
 import time
-from urllib.parse import quote, urlsplit, urlunsplit
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 from websockets.sync.client import connect as ws_connect
@@ -71,15 +71,16 @@ def check_images(client: httpx.Client, model: str | None) -> str:
     return f"{b64_image(j['data'])}, model {j.get('model')}, seed {j.get('seed')}"
 
 
-def events_url(base_url: str, api_key: str) -> str:
+def events_url(base_url: str) -> str:
     u = urlsplit(base_url)
-    scheme = "wss" if u.scheme == "https" else "ws"
-    return urlunsplit((scheme, u.netloc, "/api/v1/events", f"api_key={quote(api_key, safe='')}", ""))
+    return urlunsplit(("wss" if u.scheme == "https" else "ws", u.netloc, "/api/v1/events", "", ""))
 
 
 def check_jobs(client: httpx.Client, ws_url: str, model: str | None, timeout: float) -> str:
     events: list[str] = []
-    with ws_connect(ws_url, max_size=None) as ws:  # subscribe before queueing so no event is missed
+    # Subscribe before queueing so no event is missed; the key goes in a header, never the URL.
+    auth = {"Authorization": client.headers["Authorization"]}
+    with ws_connect(ws_url, max_size=None, additional_headers=auth) as ws:
         res = client.post("/api/v1/jobs", json=body(model))
         assert res.status_code == 202, f"HTTP {res.status_code}: {res.text[:200]}"
         job_id = res.json()["id"]
@@ -144,7 +145,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     key = args.api_key
     headers = {"Authorization": f"Bearer {key}"}
-    ws_url = events_url(args.base_url, key)
+    ws_url = events_url(args.base_url)
     results = []
     with httpx.Client(base_url=args.base_url, headers=headers, timeout=args.timeout) as client:
         results.append(run(key, "health", wait_health, client, args.timeout))

@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import { api, Style } from "./api";
 
 type Listed = Style & { builtin: boolean; edited: boolean };
@@ -11,6 +11,8 @@ function preview(s: Pick<Style, "prefix" | "suffix">, prompt: string) {
   return [...parts.slice(0, -1).map((p) => p.replace(/\.$/, "").trimEnd()), ...parts.slice(-1)].join(". ");
 }
 
+const BLANK: Style = { id: "", name: "", icon: "", prefix: "", suffix: "", negative: "", overrides: {}, models: null };
+
 const slug = (name: string) => name.toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "") || "style";
 
 export default function Styles() {
@@ -20,6 +22,7 @@ export default function Styles() {
   const [sample, setSample] = useState(SAMPLE);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState<string | null>(null);
+  const picker = useRef<HTMLInputElement>(null);
 
   const load = () =>
     api<{ styles: Listed[] }>("/api/v1/styles").then((r) => {
@@ -68,6 +71,16 @@ export default function Styles() {
     pick({ ...s, id, name }, true);
   };
 
+  // An imported file opens as a new, unsaved style; the host checks every field when it's saved.
+  const importFile = (file: File | undefined) =>
+    file?.text().then(
+      (text) => {
+        const style = { ...BLANK, ...JSON.parse(text) } as Style;
+        if (!styles.some((s) => s.id === style.id)) return pick(style, true);
+        copy(style, style.name || "Imported style"); // keep the existing one; give this a free id
+      },
+    ).catch(() => setError("That file isn't a style (it should be the JSON a style exports)."));
+
   return (
     <>
       <h1>Styles</h1>
@@ -76,9 +89,11 @@ export default function Styles() {
         <section className="card">
           <div className="model-head">
             <h2>All styles</h2>
-            <button onClick={() => copy({ id: "", name: "", icon: "", prefix: "", suffix: "", negative: "", overrides: {}, models: null }, "New style")}>
-              New
-            </button>
+            <div className="actions">
+              <button onClick={() => picker.current?.click()}>Import</button>
+              <input ref={picker} type="file" accept="application/json,.json" hidden onChange={(e) => (importFile(e.target.files?.[0]), (e.target.value = ""))} />
+              <button onClick={() => copy(BLANK, "New style")}>New</button>
+            </div>
           </div>
           <ul className="style-list">
             {styles.map((s) => (
@@ -133,6 +148,9 @@ export default function Styles() {
             <div className="actions">
               <button className="primary" type="submit">Save</button>
               {!isNew && <button type="button" onClick={() => copy(draft, `${draft.name} copy`)}>Duplicate</button>}
+              <a className="button" href={`data:application/json,${encodeURIComponent(JSON.stringify(draft, null, 2))}`} download={`${draft.id || "style"}.json`}>
+                Export
+              </a>
               {current?.builtin && current.edited && <button type="button" onClick={remove}>Reset to default</button>}
               {current && !current.builtin && (
                 <button type="button" onClick={() => confirm(`Delete "${current.name}"? This can't be undone.`) && remove()}>

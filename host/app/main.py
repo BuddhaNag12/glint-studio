@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
@@ -26,7 +27,6 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, JSONResponse
-from starlette.websockets import WebSocketDisconnect
 
 from app.auth import (
     WS_PROTOCOL,
@@ -376,6 +376,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             quality=None if body.quality == "auto" else body.quality,
             width=width,
             height=height,
+            steps=body.steps,
+            cfg=body.cfg,
             n=body.n,
         )
         prompt = compose(model, body.prompt, style=style, negative=body.negative_prompt)
@@ -445,12 +447,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await ws.accept(subprotocol=WS_PROTOCOL if ws_protocol_key(ws.headers) else None)
         jobs: JobQueue = ws.app.state.jobs
         listener = jobs.subscribe()
-        try:
+
+        async def forward() -> None:
             while True:
                 await ws.send_json(await listener.get())
-        except WebSocketDisconnect:
-            pass
+
+        sender = asyncio.create_task(forward())
+        try:
+            # Clients don't send anything; this returns when they leave or the server shuts down,
+            # so a closed tab doesn't hold a listener (or uvicorn's shutdown) until the next event.
+            while (await ws.receive())["type"] != "websocket.disconnect":
+                pass
         finally:
+            sender.cancel()
             jobs.unsubscribe(listener)
 
     @app.post(

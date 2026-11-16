@@ -336,7 +336,8 @@ Each phase ends with a working milestone, and each can ship on its own.
 - **Plain-language controls by default:** Quality (Fast, Standard or Best, from the catalog `quality` presets), Shape (from the model's allowed sizes), and Variation number (the seed, hidden for models without seeds). Sampler, steps and CFG go under an "Advanced" toggle.
 - **Styles page:** editor with live composed-prompt preview, reset, import and export.
 - Done so far (2026-11-16): the Generate page (prompt, style chips, model with a cloud note, Shape, seed, gallery with progress, cancel and save) and the Styles page (edit, duplicate, new, reset to default, delete, live preview), on `PUT/DELETE /api/v1/styles/{id}`. Checked against a mock image provider.
-- Still to do: Quality presets and the Advanced toggle, style import/export, and following jobs over the events socket instead of polling.
+- Also done (2026-11-16): Quality presets, an Advanced section with steps, CFG and the negative prompt (checked against the model's limits), style import and export as JSON, and jobs followed over the events socket instead of polling (the key goes in a WebSocket subprotocol, not the URL).
+- Still to do: a sampler choice under Advanced (the catalog doesn't describe samplers yet).
 
 **Phase 6 – Server and remote (about 1 week)**
 - LAN toggle, API key management with scopes (`local` by default, `cloud` opt-in, optional daily cap), `tunnel.rs`, and the Connect page grows endpoint docs and snippets. A key that survives restarts, so other apps don't need a new one each launch (done 2026-11-16: keychain key and a stable port; rotating it is still to do).

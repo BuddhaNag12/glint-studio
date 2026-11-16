@@ -1,5 +1,5 @@
-import { FormEvent, useEffect, useState } from "react";
-import { api, Model, secs, Style } from "./api";
+import { FormEvent, useEffect, useRef, useState } from "react";
+import { api, JobEvent, Model, onJobEvents, Quality, secs, Style } from "./api";
 
 // GET /api/v1/jobs/{id}: jobs.view() plus seed and data once done.
 type JobView = {
@@ -14,7 +14,8 @@ type JobView = {
 };
 type Result = JobView & { prompt: string; model: string; style: string };
 
-const finished = (r: Result) => ["done", "failed", "cancelled"].includes(r.status);
+const finished = (r: { status: string }) => ["done", "failed", "cancelled"].includes(r.status);
+const QUALITY: Record<Quality, string> = { fast: "Fast", standard: "Standard", best: "Best" };
 
 export default function Generate() {
   const [models, setModels] = useState<Model[]>([]);
@@ -22,10 +23,16 @@ export default function Generate() {
   const [modelId, setModelId] = useState("");
   const [styleId, setStyleId] = useState("");
   const [shape, setShape] = useState(""); // "": the style's shape, else the model's default
+  const [quality, setQuality] = useState<Quality | "">("");
   const [prompt, setPrompt] = useState("");
   const [seed, setSeed] = useState("");
+  const [steps, setSteps] = useState("");
+  const [cfg, setCfg] = useState("");
+  const [negative, setNegative] = useState("");
   const [results, setResults] = useState<Result[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const live = useRef(results);
+  live.current = results;
 
   useEffect(() => {
     api<{ models: Model[] }>("/api/v1/models").then((r) => {
@@ -35,46 +42,70 @@ export default function Generate() {
     api<{ styles: Style[] }>("/api/v1/styles").then((r) => setStyles(r.styles), (e) => setError(e.message));
   }, []);
 
-  // shortcut: polls each unfinished job every second instead of following the events socket; fine for a
-  // handful of jobs from one tab.
-  const pending = results.filter((r) => !finished(r)).map((r) => r.id).join();
-  useEffect(() => {
-    if (!pending) return;
-    const t = setInterval(() => {
-      for (const id of pending.split(",")) {
-        api<JobView>(`/api/v1/jobs/${id}`).then(
-          (v) => setResults((all) => all.map((r) => (r.id === id ? { ...r, ...v, model: r.model } : r))),
-          () => {},
-        );
-      }
-    }, 1000);
-    return () => clearInterval(t);
-  }, [pending]);
+  // A finished job never goes back to unfinished, whichever of the event and the fetch lands last.
+  const merge = (id: string, v: Partial<JobView>) =>
+    setResults((all) =>
+      all.map((r) => (r.id !== id || (finished(r) && !finished({ status: v.status ?? r.status })) ? r : { ...r, ...v, model: r.model })),
+    );
+  const refresh = (id: string) => api<JobView>(`/api/v1/jobs/${id}`).then((v) => merge(id, v), () => {});
+
+  // Events carry progress; the image and seed come from the job itself once it's done. After a reconnect,
+  // catch up on every unfinished job, since its events may have been missed.
+  useEffect(
+    () =>
+      onJobEvents(
+        (e: JobEvent) => {
+          merge(e.id, e);
+          if (finished(e)) refresh(e.id);
+        },
+        () => live.current.filter((r) => !finished(r)).forEach((r) => refresh(r.id)),
+      ),
+    [],
+  );
 
   const model = models.find((m) => m.id === modelId);
   const usable = styles.filter((s) => !s.models || s.models.includes(modelId));
+  const qualities = (Object.keys(QUALITY) as Quality[]).filter((q) => model?.quality[q]);
+  const preset = quality ? model?.quality[quality] : undefined;
+  const pickModel = (id: string) => {
+    setModelId(id);
+    setShape("");
+    setQuality("");
+    setSteps("");
+    setCfg("");
+  };
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
     if (!model) return;
     const size = shape && model.limits.sizes[shape];
+    const num = (v: string) => (v === "" ? undefined : Number(v));
     const body = {
       prompt,
       model: modelId,
       style: styleId || undefined,
       size: size ? `${size[0]}x${size[1]}` : undefined,
-      seed: seed === "" ? undefined : Number(seed),
+      quality: quality || undefined,
+      seed: num(seed),
+      steps: num(steps),
+      cfg: num(cfg),
+      negative_prompt: negative.trim() || undefined,
     };
     setError(null);
     api<JobView>("/api/v1/jobs", { method: "POST", body: JSON.stringify(body) }).then(
-      (job) =>
+      (job) => {
         setResults((all) => [
           { ...job, progress: 0, elapsed_ms: null, error: null, prompt, model: model.name, style: styleId },
           ...all,
-        ]),
+        ]);
+        refresh(job.id); // in case it finished before it was in the list
+      },
       (e) => setError(e.message),
     );
   };
+
+  const [minSteps, maxSteps] = model?.limits.steps ?? [];
+  const [minCfg, maxCfg] = model?.limits.cfg ?? [];
 
   return (
     <>
@@ -96,7 +127,7 @@ export default function Generate() {
         <div className="split">
           <label>
             Model
-            <select value={modelId} onChange={(e) => (setModelId(e.target.value), setShape(""))}>
+            <select value={modelId} onChange={(e) => pickModel(e.target.value)}>
               {models.map((m) => (
                 <option key={m.id} value={m.id}>
                   {m.name}
@@ -105,6 +136,19 @@ export default function Generate() {
               ))}
             </select>
           </label>
+          {qualities.length > 0 && (
+            <label>
+              Quality
+              <select value={quality} onChange={(e) => setQuality(e.target.value as Quality | "")}>
+                <option value="">Default</option>
+                {qualities.map((q) => (
+                  <option key={q} value={q}>
+                    {QUALITY[q]}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
           <label>
             Shape
             <select value={shape} onChange={(e) => setShape(e.target.value)}>
@@ -119,11 +163,51 @@ export default function Generate() {
           </label>
           {model?.limits.supports_seed && (
             <label>
-              Seed (blank for random)
+              Variation number (blank for random)
               <input type="number" min={0} value={seed} onChange={(e) => setSeed(e.target.value)} />
             </label>
           )}
         </div>
+        {model && (model.limits.steps || model.limits.cfg || model.limits.supports_negative) && (
+          <details className="advanced">
+            <summary>Advanced</summary>
+            <div className="split">
+              {model.limits.steps && (
+                <label>
+                  Steps ({minSteps}–{maxSteps})
+                  <input
+                    type="number"
+                    min={minSteps}
+                    max={maxSteps}
+                    value={steps}
+                    placeholder={`Auto (${preset?.steps ?? model.defaults.steps ?? "model's"})`}
+                    onChange={(e) => setSteps(e.target.value)}
+                  />
+                </label>
+              )}
+              {model.limits.cfg && (
+                <label>
+                  CFG ({minCfg}–{maxCfg})
+                  <input
+                    type="number"
+                    min={minCfg}
+                    max={maxCfg}
+                    step={0.1}
+                    value={cfg}
+                    placeholder={`Auto (${preset?.cfg ?? model.defaults.cfg ?? "model's"})`}
+                    onChange={(e) => setCfg(e.target.value)}
+                  />
+                </label>
+              )}
+            </div>
+            {model.limits.supports_negative && (
+              <label>
+                Negative prompt (added to the model's and the style's)
+                <textarea value={negative} onChange={(e) => setNegative(e.target.value)} rows={2} maxLength={4000} />
+              </label>
+            )}
+          </details>
+        )}
         {error && <p className="error" role="alert">{error}</p>}
         <div className="actions">
           <button className="primary" type="submit" disabled={!model || !prompt.trim()}>
@@ -145,8 +229,9 @@ export default function Generate() {
                 {r.model}
                 {r.style && ` · ${r.style}`}
                 {r.status === "queued" && ` · waiting${r.queue_position ? ` (#${r.queue_position})` : ""}`}
+                {r.status === "running" && " · running"}
                 {r.status === "done" && ` · ${secs(r.elapsed_ms)}`}
-                {r.seed != null && ` · seed ${r.seed}`}
+                {r.seed != null && ` · variation ${r.seed}`}
                 {r.status === "cancelled" && " · cancelled"}
               </p>
               {r.error && <p className="error">{r.error.message}</p>}

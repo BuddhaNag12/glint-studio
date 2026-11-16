@@ -80,3 +80,5 @@ pre.snippet { margin: 0; padding: 12px; background: var(--bg); border-radius: 8p
 .style-list button { width: 100%; text-align: left; border-color: transparent; background: transparent; }
 .style-list button[aria-current="true"] { border-color: var(--accent); }
 .form h2 { margin: 0; }
+.advanced summary { cursor: pointer; color: var(--muted); }
+.advanced[open] { display: grid; gap: 12px; }

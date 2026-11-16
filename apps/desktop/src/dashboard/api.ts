@@ -20,14 +20,16 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   return body as T;
 }
 
-/** Job events as they happen; reconnects if the host restarts. Returns a function that stops it. */
-export function onJobEvents(handle: (e: JobEvent) => void): () => void {
+/** Job events as they happen; reconnects if the host restarts, calling onOpen each time it's (re)connected so
+ * the caller can catch up on what it missed. Returns a function that stops it. */
+export function onJobEvents(handle: (e: JobEvent) => void, onOpen?: () => void): () => void {
   let ws: WebSocket | null = null;
   let stopped = false;
   const open = () => {
     const scheme = location.protocol === "https:" ? "wss" : "ws";
     // The key rides as a subprotocol, so it never lands in a URL or the host log.
     ws = new WebSocket(`${scheme}://${location.host}/api/v1/events`, ["glint.v1", `glint.key.${conn?.api_key ?? ""}`]);
+    ws.onopen = () => onOpen?.();
     ws.onmessage = (m) => handle(JSON.parse(m.data));
     ws.onclose = () => !stopped && setTimeout(open, 3000);
   };
@@ -73,9 +75,17 @@ export type Model = {
   id: string;
   name: string;
   cloud: boolean;
-  defaults: { shape: string };
-  limits: { sizes: Record<string, [number, number]>; supports_negative: boolean; supports_seed: boolean };
+  defaults: { shape: string; steps: number | null; cfg: number | null };
+  quality: Partial<Record<Quality, { steps: number | null; cfg: number | null }>>;
+  limits: {
+    sizes: Record<string, [number, number]>;
+    steps: [number, number] | null;
+    cfg: [number, number] | null;
+    supports_negative: boolean;
+    supports_seed: boolean;
+  };
 };
+export type Quality = "fast" | "standard" | "best";
 export type Style = {
   id: string;
   name: string;

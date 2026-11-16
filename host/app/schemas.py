@@ -78,6 +78,8 @@ class ImagesRequest(BaseModel):
     style: str | None = None  # a style id from GET /api/v1/styles
     negative_prompt: str | None = Field(default=None, max_length=4000)
     seed: int | None = Field(default=None, ge=-1, le=2**63 - 1)
+    steps: int | None = Field(default=None, ge=1, le=150)  # extension: checked against the model's limits
+    cfg: float | None = Field(default=None, ge=0.0, le=30.0)
 
     @field_validator("prompt")
     @classmethod
