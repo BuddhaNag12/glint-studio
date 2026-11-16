@@ -321,7 +321,11 @@ Each phase ends with a working milestone, and each can ship on its own.
 - Milestone: scan → open the dashboard → "Runs great" → one click → model ready → first image shows up on the Overview.
 - Done so far (2026-11-16): all of the above in code. Model `variants` in the catalog (Z-Image Turbo bf16). Recommendations and downloads moved from Rust to the host (`local_models.py`), job stats (`stats.py`), the dashboard (`dashboard.py` + `apps/desktop/src/dashboard/`), and the menu-bar icon with the signed login link (`dashboard.rs`).
 - Next: the first real local image with `cargo test real_first_image -- --ignored --nocapture`. It downloads Z-Image Turbo bf16 (about 21 GB) through the host, resuming any `.part` left in the test runtime. Then try Download in the real dashboard.
-- Still to do: smaller variants (fp8, GGUF), which need the host to put file names into the workflow; the HF token; linking existing model folders; a monochrome menu-bar icon.
+- Done 2026-11-16: a model kept in memory and linked model folders.
+  - **Model in memory:** when ComfyUI starts, the host runs a tiny warm-up image (256×256, 1 step) with the default model, so the first real image skips the load. A watcher re-runs it after an engine restart. The Models page shows the state, with Load now, Unload (ComfyUI `/free`) and a "Load a model when Glint Studio starts" switch (on by default).
+  - **Linked folders:** paste a ComfyUI folder, or pick one the host found (ComfyUI Desktop's config, `Documents/ComfyUI`, the Windows portable build, drives C–F). The host keeps `engine.json` and writes `extra_model_paths.yaml`; the app restarts ComfyUI with `--extra-model-paths-config` when it changes. Linked models count as installed, including under the old `unet` and `clip` folder names.
+  - Still to check: detection on a real Windows PC.
+- Still to do: smaller variants (fp8, GGUF), which need the host to put file names into the workflow; the HF token; a monochrome menu-bar icon.
 
 **Phase 4 – Providers and customization (about 1–2 weeks)**
 - **Providers page:** add a provider, paste a key (keychain), "Test key", pick its models; add a remote ComfyUI or any OpenAI-compatible endpoint; add custom model IDs.
@@ -338,6 +342,22 @@ Each phase ends with a working milestone, and each can ship on its own.
 - Done so far (2026-11-16): the Generate page (prompt, style chips, model with a cloud note, Shape, seed, gallery with progress, cancel and save) and the Styles page (edit, duplicate, new, reset to default, delete, live preview), on `PUT/DELETE /api/v1/styles/{id}`. Checked against a mock image provider.
 - Also done (2026-11-16): Quality presets, an Advanced section with steps, CFG and the negative prompt (checked against the model's limits), style import and export as JSON, and jobs followed over the events socket instead of polling (the key goes in a WebSocket subprotocol, not the URL).
 - Still to do: a sampler choice under Advanced (the catalog doesn't describe samplers yet).
+
+**Phase 5b – Chat, motion and the menu-bar menu (next, about 1–2 weeks)**
+- **Chat history:** a left sidebar on Generate, like a chat app. Each chat keeps its prompts, settings and images; New chat, rename, delete, and search. Stored by the host (SQLite next to the stats), so the phone page sees the same history. Collapses to a drawer on narrow screens.
+- **Model picker in the chat:** a model menu in the composer (local and cloud, with fit and "in memory" marks). Picking a local model that isn't loaded says it will load first; the chat remembers its model.
+- **Generation animation:** while an image is being made, its frame shows a slow aurora gradient in the chosen style's colours with a soft sheen passing over it, the step progress in plain words, and the live preview fading in when ComfyUI sends one. The finished image fades in over the gradient. Reduced motion shows the gradient still, with no sheen.
+- **Page transitions:** a short fade-and-rise (about 200 ms) between dashboard pages and tabs, and for cards appearing; off with reduced motion.
+- **Workflow view:** a read-only 2D graph of the ComfyUI workflow behind a model (nodes as boxes, links as curves, laid out left to right), with the nodes the host fills in (prompt, size, seed, steps) highlighted and labelled. During a job the running node lights up from ComfyUI's `executing` events. Opened from a model on the Models page.
+- **Menu-bar menu:** every item goes straight to a place, in this order:
+  - Server running at `127.0.0.1:7788` (or "Server stopped"); clicking copies the address.
+  - Start server / Stop server (stops the host and ComfyUI; the menu stays).
+  - Models ▸ installed models, the loaded one ticked; picking one loads it. Unload, and Browse models… (opens Models).
+  - System stats ▸ GPU memory, queue, images today, refreshed every few seconds; clicking opens the Dashboard.
+  - Generate…, Connect…, Open Dashboard (each opens that dashboard page).
+  - Setup & Cloud Keys…, About Glint Studio.
+  - Quit (was "Quit Glint Studio").
+- Milestone: on Windows and macOS, start from the menu, pick a model there, generate from a chat, reopen the chat after a restart, and watch the workflow view light up while it runs.
 
 **Phase 6 – Server and remote (about 1 week)**
 - LAN toggle, API key management with scopes (`local` by default, `cloud` opt-in, optional daily cap), `tunnel.rs`, and the Connect page grows endpoint docs and snippets. A key that survives restarts, so other apps don't need a new one each launch (done 2026-11-16: keychain key and a stable port).
