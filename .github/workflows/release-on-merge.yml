@@ -1,0 +1,41 @@
+name: Release on merge
+
+# When main gets a version that has no tag yet (set with scripts/bump-version.mjs in a PR), tag it and
+# build the installers into a draft GitHub release. Merges that keep the version do nothing.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency: release
+
+jobs:
+  tag:
+    name: Tag a new version
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: tag
+        run: |
+          version=$(node -p "require('./apps/desktop/src-tauri/tauri.conf.json').version")
+          if git rev-parse -q --verify "refs/tags/v$version" >/dev/null; then
+            echo "v$version is already tagged; nothing to release."
+          else
+            git tag "v$version" && git push origin "v$version"
+            echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          fi
+
+  # A tag pushed by a workflow doesn't start other workflows, so the build is called from here.
+  build:
+    needs: tag
+    if: needs.tag.outputs.tag
+    uses: ./.github/workflows/release.yml
+    with:
+      ref: ${{ needs.tag.outputs.tag }}
+    secrets: inherit

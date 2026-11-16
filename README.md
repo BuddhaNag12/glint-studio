@@ -111,12 +111,12 @@ then `cargo test real_first_image -- --ignored --nocapture` (downloads Z-Image T
 
 ## Release
 
-1. On GitHub, open Actions → **Prepare release** → Run workflow, on `main`, and enter the version (like `0.2.0`).
-2. It sets that version in every file (`scripts/bump-version.mjs`), commits and tags `v0.2.0` on `main`, then builds
-   the installers for macOS (Apple Silicon and Intel), Windows and Linux into a draft GitHub release.
+1. In a PR, set the new version in every file: `node scripts/bump-version.mjs 0.2.0`.
+2. Merge it into `main`. **Release on merge** sees a version with no tag, tags `v0.2.0`, and builds the installers
+   for macOS (Apple Silicon and Intel), Windows and Linux into a draft GitHub release.
 3. Check the draft, then publish it.
 
-By hand instead: `node scripts/bump-version.mjs 0.2.0`, commit, then `git tag v0.2.0 && git push origin main v0.2.0`.
+Merges that keep the version build nothing. Pushing a tag like `v0.2.0` by hand also starts a build.
 
 The installers aren't signed yet, so macOS and Windows warn on first open.
 

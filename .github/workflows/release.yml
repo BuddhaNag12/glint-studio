@@ -1,7 +1,7 @@
 name: Release
 
-# Builds the installers into a draft GitHub release. Usually started by "Prepare release", which sets the
-# version and tags it; pushing a tag like v0.1.0 by hand (matching tauri.conf.json) works too.
+# Builds the installers into a draft GitHub release. Usually started by "Release on merge" when main gets a
+# new version; pushing a tag like v0.1.0 by hand (matching tauri.conf.json) works too.
 # Check the draft, then publish it by hand.
 on:
   push:
