@@ -1,11 +1,18 @@
 name: Release
 
-# Push a tag like v0.1.0 (matching the version in tauri.conf.json) to build the installers into a draft
-# GitHub release. Check the draft, then publish it by hand.
+# Builds the installers into a draft GitHub release. Usually started by "Prepare release", which sets the
+# version and tags it; pushing a tag like v0.1.0 by hand (matching tauri.conf.json) works too.
+# Check the draft, then publish it by hand.
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        description: The tag to build
+        type: string
+        required: true
 
 permissions:
   contents: write
@@ -24,12 +31,16 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
       - name: The tag matches the app version
-        if: github.ref_type == 'tag'
+        if: github.ref_type == 'tag' || inputs.ref
         shell: bash
+        env:
+          TAG: ${{ inputs.ref || github.ref_name }}
         run: |
           version=$(node -p "require('./apps/desktop/src-tauri/tauri.conf.json').version")
-          [ "${GITHUB_REF_NAME}" = "v$version" ] || { echo "Tag $GITHUB_REF_NAME doesn't match version $version"; exit 1; }
+          [ "$TAG" = "v$version" ] || { echo "Tag $TAG doesn't match version $version"; exit 1; }
       - name: Linux system deps
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf

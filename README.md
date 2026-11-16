@@ -111,10 +111,12 @@ then `cargo test real_first_image -- --ignored --nocapture` (downloads Z-Image T
 
 ## Release
 
-1. Set the same version in `apps/desktop/src-tauri/tauri.conf.json` and `apps/desktop/package.json`, and commit.
-2. Tag it and push the tag: `git tag v0.1.0 && git push origin v0.1.0`.
-3. The Release workflow builds the installers for macOS (Apple Silicon and Intel), Windows and Linux into a draft
-   GitHub release. Check the draft, then publish it.
+1. On GitHub, open Actions → **Prepare release** → Run workflow, on `main`, and enter the version (like `0.2.0`).
+2. It sets that version in every file (`scripts/bump-version.mjs`), commits and tags `v0.2.0` on `main`, then builds
+   the installers for macOS (Apple Silicon and Intel), Windows and Linux into a draft GitHub release.
+3. Check the draft, then publish it.
+
+By hand instead: `node scripts/bump-version.mjs 0.2.0`, commit, then `git tag v0.2.0 && git push origin main v0.2.0`.
 
 The installers aren't signed yet, so macOS and Windows warn on first open.
 

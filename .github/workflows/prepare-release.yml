@@ -1,0 +1,53 @@
+name: Prepare release
+
+# Actions → Prepare release → Run workflow (from main), and enter the new version, like 0.2.0.
+# It sets that version in every file, commits and tags it on main, then builds the installers into a
+# draft GitHub release. Check the draft, then publish it by hand.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version, like 0.2.0
+        required: true
+
+permissions:
+  contents: write
+
+concurrency: release
+
+jobs:
+  bump:
+    name: Set the version and tag it
+    runs-on: ubuntu-latest
+    outputs:
+      tag: v${{ inputs.version }}
+    env:
+      VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check the version
+        run: |
+          [ "$GITHUB_REF_NAME" = main ] || { echo "Run this from main, not $GITHUB_REF_NAME."; exit 1; }
+          echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || { echo "Use a version like 0.2.0."; exit 1; }
+          if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then echo "v$VERSION is already released."; exit 1; fi
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node scripts/bump-version.mjs "$VERSION"
+      - name: Commit, tag and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "Release v$VERSION" || echo "Already at $VERSION; tagging as it is."
+          git tag "v$VERSION"
+          git push origin HEAD:main "v$VERSION"
+
+  # A tag pushed by this workflow doesn't start other workflows, so the build is called from here.
+  build:
+    needs: bump
+    uses: ./.github/workflows/release.yml
+    with:
+      ref: ${{ needs.bump.outputs.tag }}
+    secrets: inherit
