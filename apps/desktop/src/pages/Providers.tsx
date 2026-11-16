@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { HostInfo } from "./Setup";
+import { Alert, Icon, useConfirm } from "../dashboard/ui";
 
 // Mirrors ProviderStatus in src-tauri/src/secrets.rs. The key itself never comes back from Rust.
 type Provider = { id: string; name: string; has_key: boolean };
@@ -14,7 +15,7 @@ export default function Providers({ host: firstHost }: { host: HostInfo }) {
   const [key, setKey] = useState("");
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<Note | null>(null);
-  const [rotating, setRotating] = useState(false);
+  const confirm = useConfirm();
 
   const refresh = async () => {
     const list = await invoke<Provider[]>("list_providers");
@@ -67,12 +68,14 @@ export default function Providers({ host: firstHost }: { host: HostInfo }) {
 
   return (
     <main className="page">
-      <h1>Cloud provider</h1>
-      <p className="lead">
-        Paste your own API key. It is kept in your system keychain and only sent to the provider.
-      </p>
+      <div className="page-intro">
+        <span className="mark large" aria-hidden="true" />
+        <h1>Cloud provider</h1>
+        <p className="lead">Paste your own API key. It's kept in your system keychain and only sent to the provider.</p>
+      </div>
+      {confirm.dialog}
 
-      <section className="card form">
+      <section className="card form" aria-label="Provider key">
         <label>
           Provider
           <select
@@ -118,53 +121,62 @@ export default function Providers({ host: firstHost }: { host: HostInfo }) {
           </button>
         </div>
 
-        <p className={note?.ok === false ? "error" : "lead"} role="status" aria-live="polite">
-          {busy ? "Working…" : note?.text}
-        </p>
+        <div aria-live="polite">
+          {busy ? (
+            <p className="status quiet">
+              <Icon name="spinner" size={14} />
+              Working…
+            </p>
+          ) : note?.ok === false ? (
+            <Alert>{note.text}</Alert>
+          ) : note ? (
+            <p className="status" role="status">
+              <Icon name="check" size={14} />
+              {note.text}
+            </p>
+          ) : null}
+        </div>
       </section>
 
-      <section className="card">
-        <h2>Dashboard</h2>
-        <p className="lead">Activity, models and the address other apps connect to. Glint Studio stays in the menu bar.</p>
-        <button
-          onClick={() =>
-            invoke("open_dashboard").catch((e) => setNote({ ok: false, text: String(e) }))
-          }
-        >
-          Open the dashboard
-        </button>
+      <section className="card split">
+        <div>
+          <h2>Dashboard</h2>
+          <p className="muted">Activity, models and the address other apps connect to. Glint Studio stays in the menu bar.</p>
+        </div>
+        <button onClick={() => invoke("open_dashboard").catch((e) => setNote({ ok: false, text: String(e) }))}>Open the dashboard</button>
       </section>
 
       <section className="card">
         <h2>Main API key</h2>
-        <p className="lead">
-          If the main key leaked, make a new one. Apps using the old key stop working until you give them the new one; keys
-          made on the Connect page keep working.
+        <p className="muted">
+          If the main key leaked, make a new one. Apps using the old key stop working until you give them the new one; keys made
+          on the Connect page keep working.
         </p>
-        {/* Two steps, inline: the webview may not show window.confirm. */}
-        {rotating ? (
-          <div className="actions">
-            <button
-              className="primary"
-              disabled={busy}
-              onClick={() =>
-                run(async () => {
-                  setRotating(false);
-                  setHost(await invoke<HostInfo>("rotate_host_key"));
-                  await invoke("open_dashboard"); // the old dashboard login ended with the old key
-                  return "Done. The dashboard's Connect page shows the new key.";
+        <div className="actions">
+          <button
+            className="danger"
+            disabled={busy}
+            onClick={() =>
+              confirm
+                .ask({
+                  title: "Make a new main key?",
+                  body: "Apps using the current main key stop working until you give them the new one. Keys made on the Connect page keep working.",
+                  action: "Make a new key",
                 })
-              }
-            >
-              Yes, make a new key
-            </button>
-            <button onClick={() => setRotating(false)}>Cancel</button>
-          </div>
-        ) : (
-          <button disabled={busy} onClick={() => setRotating(true)}>
+                .then(
+                  (ok) =>
+                    void (ok &&
+                    run(async () => {
+                      setHost(await invoke<HostInfo>("rotate_host_key"));
+                      await invoke("open_dashboard"); // the old dashboard login ended with the old key
+                      return "Done. The dashboard's Connect page shows the new key.";
+                    })),
+                )
+            }
+          >
             Make a new main key
           </button>
-        )}
+        </div>
       </section>
     </main>
   );

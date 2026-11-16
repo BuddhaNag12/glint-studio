@@ -4,6 +4,7 @@ import "../App.css";
 import "./dashboard.css";
 import { api, setKey } from "./api";
 import Generate from "./Generate";
+import { Alert, Icon } from "./ui";
 
 const STORE = "glint.key";
 const PAIR = "Scan the QR code on Glint Studio's Connect page (Pair a phone) to use this page.";
@@ -33,15 +34,24 @@ function Phone() {
   }, []);
 
   return (
-    <>
-      <header className="topbar">
-        <strong>Glint Studio</strong>
+    <div className="phone">
+      <header className="phone-bar">
+        <span className="brand">
+          <span className="mark" aria-hidden="true" />
+          Glint Studio
+        </span>
+        {ready && (
+          <span className="status small">
+            <Icon name="check" size={14} />
+            Connected
+          </span>
+        )}
       </header>
-      <main className="page wide">
-        {error && <p className="error" role="alert">{error}</p>}
-        {ready && <Generate />}
+      <main className="phone-main">
+        {error && <Alert>{error}</Alert>}
+        {ready && <Generate phone />}
       </main>
-    </>
+    </div>
   );
 }
 

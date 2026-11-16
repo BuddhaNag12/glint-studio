@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { Alert, Icon } from "../dashboard/ui";
 
 // Mirrors HardwareProfile in src-tauri/src/scan.rs.
 type Backend = "cuda" | "mps" | "rocm" | "xpu" | "cpu";
@@ -46,19 +47,38 @@ export default function Onboarding({ onChoose }: { onChoose: (engine: Engine) =>
 
   const gpuReady = profile !== null && profile.backend !== "cpu" && profile.vram_budget_gb > 0;
 
+  const choice = (engine: Engine, recommended: boolean, title: string, body: string) => (
+    <button className={recommended ? "choice recommended" : "choice"} onClick={() => onChoose(engine)}>
+      <strong>
+        {title}
+        {recommended && <span className="tag">Recommended</span>}
+      </strong>
+      <span>{body}</span>
+    </button>
+  );
+
   return (
     <main className="page">
-      <h1>Welcome to Glint Studio</h1>
-      <p className="lead">First, a quick look at this computer to see what it can run.</p>
+      <div className="page-intro">
+        <span className="mark large" aria-hidden="true" />
+        <h1>Welcome to Glint Studio</h1>
+        <p className="lead">First, a quick look at this computer to see what it can run.</p>
+      </div>
 
-      <section className="card" aria-live="polite" aria-busy={!profile && !error}>
+      <section className="card" aria-live="polite" aria-busy={!profile && !error} aria-labelledby="computer-title">
+        <h2 id="computer-title">This computer</h2>
         {error ? (
           <>
-            <p className="error">The scan didn't work: {error}</p>
-            <button onClick={scan}>Try again</button>
+            <Alert>The scan didn't work: {error}</Alert>
+            <div className="actions">
+              <button onClick={scan}>Try again</button>
+            </div>
           </>
         ) : !profile ? (
-          <p>Scanning your hardware…</p>
+          <p className="status quiet">
+            <Icon name="spinner" size={16} />
+            Scanning your hardware…
+          </p>
         ) : (
           <>
             <dl className="facts">
@@ -69,16 +89,14 @@ export default function Onboarding({ onChoose }: { onChoose: (engine: Engine) =>
               <dt>Processor</dt>
               <dd>{profile.cpu || "Unknown"}</dd>
               <dt>Memory</dt>
-              <dd>{profile.ram_gb} GB</dd>
+              <dd className="num">{profile.ram_gb} GB</dd>
               <dt>Free disk</dt>
-              <dd>{profile.disk_free_gb} GB</dd>
+              <dd className="num">{profile.disk_free_gb} GB</dd>
               <dt>Graphics</dt>
               <dd>
                 {profile.gpus.length === 0
                   ? "None found"
-                  : profile.gpus
-                      .map((g) => (g.vram_gb ? `${g.name}, ${g.vram_gb} GB` : g.name))
-                      .join("; ")}
+                  : profile.gpus.map((g) => (g.vram_gb ? `${g.name}, ${g.vram_gb} GB` : g.name)).join("; ")}
               </dd>
               <dt>Runs models on</dt>
               <dd>
@@ -86,31 +104,25 @@ export default function Onboarding({ onChoose }: { onChoose: (engine: Engine) =>
                 {profile.vram_budget_gb > 0 && `, up to ${profile.vram_budget_gb} GB for models`}
               </dd>
             </dl>
-            {profile.warnings.length > 0 && (
-              <ul className="warnings">
-                {profile.warnings.map((w) => (
-                  <li key={w}>{w}</li>
-                ))}
-              </ul>
-            )}
+            {profile.warnings.map((w) => (
+              <Alert key={w} info>
+                {w}
+              </Alert>
+            ))}
           </>
         )}
       </section>
 
       {profile && (
-        <section className="choices">
-          <h2>How do you want to make images?</h2>
-          <button className={gpuReady ? "choice primary" : "choice"} onClick={() => onChoose("local")}>
-            <strong>On this computer</strong>
-            <span>
-              Free and private. Installs the image engine (a few GB) and a model that fits.
-              {!gpuReady && " Without a supported GPU this is slow."}
-            </span>
-          </button>
-          <button className={gpuReady ? "choice" : "choice primary"} onClick={() => onChoose("cloud")}>
-            <strong>With a cloud provider</strong>
-            <span>Fast on any computer. Uses your own API key, billed by the provider. Small install.</span>
-          </button>
+        <section className="choices" aria-labelledby="how-title">
+          <h2 id="how-title">How do you want to make images?</h2>
+          {choice(
+            "local",
+            gpuReady,
+            "On this computer",
+            `Free and private. Installs the image engine (a few GB) and a model that fits.${gpuReady ? "" : " Without a supported GPU this is slow."}`,
+          )}
+          {choice("cloud", !gpuReady, "With a cloud provider", "Fast on any computer. Uses your own API key, billed by the provider. Small install.")}
         </section>
       )}
     </main>

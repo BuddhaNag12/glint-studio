@@ -77,6 +77,7 @@ class FakeComfyClient:
         output_node_id: str | None = None,
         timeout_seconds: float = 120.0,
         on_progress: Any = None,
+        on_preview: Any = None,
     ) -> tuple[str, list[ComfyImageOutput]]:
         if self.generate_error:
             raise self.generate_error
@@ -733,9 +734,11 @@ async def test_comfy_client_supports_save_image_websocket_without_disk_or_view(
     transport = httpx.MockTransport(handler)
     async with httpx.AsyncClient(transport=transport) as http_client:
         client = ComfyClient("http://127.0.0.1:8188", "ws://127.0.0.1:8188", http_client)
-        prompt_id, images = await client.generate_images(SAMPLE_WORKFLOW, output_node_id="9")
+        previews: list[bytes] = []
+        prompt_id, images = await client.generate_images(SAMPLE_WORKFLOW, output_node_id="9", on_preview=previews.append)
 
     assert prompt_id == "ws-789"
+    assert previews == [b"sampling-preview"]  # the sampler's frame is a preview, never an output image
     assert len(images) == 1
     assert images[0].content == TINY_PNG
     assert images[0].mime_type == "image/png"

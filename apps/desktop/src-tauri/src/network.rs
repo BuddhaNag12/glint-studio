@@ -73,6 +73,11 @@ pub fn spawn(app: AppHandle) {
                     continue;
                 }
             }
+            if host.is_some() {
+                if let Err(e) = tauri::async_runtime::block_on(runtime::follow_model_folders(&app)) {
+                    eprintln!("engine: {e}");
+                }
+            }
             if lan_failed.is_some_and(|f| f != want.lan) {
                 lan_failed = None;
             }

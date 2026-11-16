@@ -31,7 +31,8 @@ class Settings(BaseSettings):
         default_factory=lambda: ["http://localhost:3000", "http://localhost:5173"]
     )
     public_base_url: str = "http://127.0.0.1:8000"
-    request_timeout_seconds: float = Field(default=120.0, gt=0)
+    # The first image after a start also loads the model (about 19 GB for Z-Image Turbo); on Apple Silicon that alone runs past 2 minutes.
+    request_timeout_seconds: float = Field(default=600.0, gt=0)
     max_concurrent_jobs: int = Field(default=1, ge=1)
     queue_timeout_seconds: float = Field(default=600.0, gt=0)  # longest wait for a free slot
     output_dir: Path = Path("generated_images")
@@ -53,6 +54,10 @@ class Settings(BaseSettings):
     dashboard_dir: Path | None = None  # the built dashboard web page
     network_file: Path | None = None  # sharing the dashboard asks for, {"lan", "tunnel"}; the app applies it
     tunnel_file: Path | None = None  # the app's report on the public link, {"status", "url", "error"}
+    logs_dir: Path | None = None  # the app's process logs: host.log, comfyui.log, tunnel.log
+    # engine.json, {"preload", "folders"}: the app links the folders into ComfyUI (extra_model_paths.yaml
+    # beside it) and restarts it when they change. Unset: no preload, no linked folders.
+    engine_file: Path | None = None
     keys_file: Path | None = None  # keys.json: extra API keys, hashed; unset keeps them in memory
     serve_on_network: bool = False  # the app started this host on every address, not just 127.0.0.1
     # Host header values the dashboard pages accept; ["*"] accepts any. Guards them against DNS
@@ -62,6 +67,7 @@ class Settings(BaseSettings):
     @field_validator(
         "comfyui_dir", "comfyui_temp_dir", "comfyui_output_dir", "user_styles_dir",
         "providers_file", "models_dir", "hardware_file", "stats_db", "dashboard_dir", "network_file", "tunnel_file",
+        "logs_dir", "engine_file",
         mode="before",
     )
     @classmethod

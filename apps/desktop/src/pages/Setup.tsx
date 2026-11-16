@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import type { Engine } from "./Onboarding";
+import { Alert, Icon } from "../dashboard/ui";
 
 // Mirrors Progress and HostInfo in src-tauri/src/runtime.rs; "start" is the start_host call.
 type StepId = "uv" | "python" | "venv" | "host" | "torch" | "comfyui" | "start";
@@ -18,12 +19,12 @@ const ENGINE: [StepId, string][] = [
   ["torch", "Install PyTorch for your GPU"],
   ["comfyui", "Install ComfyUI (the image engine)"],
 ];
-const stepsFor = (engine: Engine): [StepId, string][] => [
-  ...CORE,
-  ...(engine === "local" ? ENGINE : []),
-  ["start", engine === "local" ? "Start ComfyUI and the host" : "Start the host"],
+// The steps the user sees: each groups the installer's progress rows.
+const groupsFor = (engine: Engine): [string, string, [StepId, string][]][] => [
+  ["Glint Studio basics", "Python and the host, in a folder of their own", CORE],
+  ...(engine === "local" ? [["Image engine", "PyTorch and ComfyUI, sized for your GPU", ENGINE] as [string, string, [StepId, string][]]] : []),
+  ["Start", engine === "local" ? "ComfyUI and the host" : "The host", [["start", engine === "local" ? "Start ComfyUI and the host" : "Start the host"]]],
 ];
-const MARK: Record<StepState, string> = { pending: "○", running: "◐", done: "✓", failed: "✕" };
 const allPending = () =>
   Object.fromEntries([...CORE, ...ENGINE, ["start"]].map(([id]) => [id, "pending"])) as Record<StepId, StepState>;
 
@@ -36,7 +37,7 @@ export default function Setup({
   onBack: () => void;
   onReady: (host: HostInfo) => void;
 }) {
-  const steps = stepsFor(engine);
+  const groups = groupsFor(engine);
   const [states, setStates] = useState(allPending);
   const [error, setError] = useState<string | null>(null);
   const [ready, setReady] = useState<{ host: HostInfo; models: number } | null>(null);
@@ -88,59 +89,104 @@ export default function Setup({
     };
   }, [attempt, engine]);
 
+  const groupState = (rows: [StepId, string][]): StepState => {
+    const all = rows.map(([id]) => states[id]);
+    if (all.includes("failed")) return "failed";
+    if (all.every((x) => x === "done")) return "done";
+    return all.some((x) => x !== "pending") ? "running" : "pending";
+  };
+
   return (
     <main className="page">
-      <h1>Setting up</h1>
-      <p className="lead">
-        This happens once and needs no admin rights.{" "}
-        {engine === "local"
-          ? "It needs about 2 GB of disk on a Mac, and more with an NVIDIA or AMD GPU (their PyTorch builds are larger)."
-          : "It downloads about 50 MB."}
-      </p>
+      <div className="page-intro">
+        <span className="mark large" aria-hidden="true" />
+        <h1>Setting up</h1>
+        <p className="lead">
+          This happens once and needs no admin rights.{" "}
+          {engine === "local"
+            ? "It needs about 2 GB of disk on a Mac, and more with an NVIDIA or AMD GPU (their PyTorch builds are larger)."
+            : "It downloads about 50 MB."}
+        </p>
+      </div>
 
-      <section className="card" aria-live="polite">
-        <ol className="steps">
-          {steps.map(([id, label]) => (
-            <li key={id} className={states[id]}>
-              <span className="mark" aria-hidden="true">{MARK[states[id]]}</span>
-              {label}
-              <span className="visually-hidden">: {states[id]}</span>
+      <ol className="steps" aria-live="polite">
+        {groups.map(([title, sub, rows], n) => {
+          const g = groupState(rows);
+          const open = g === "running" || g === "failed";
+          return (
+            <li key={title} className={g === "pending" ? "step waiting" : "step"} aria-current={g === "running" ? "step" : undefined}>
+              <div className="step-head">
+                <span className={g === "done" ? "badge done" : g === "running" ? "badge now" : g === "failed" ? "badge bad" : "badge"}>
+                  {g === "done" ? <Icon name="check" size={14} /> : g === "failed" ? <Icon name="error" size={14} /> : n + 1}
+                </span>
+                <span>
+                  {title}
+                  <small>{sub}</small>
+                </span>
+                <span>{{ pending: "Waiting", running: "Working…", done: "Done", failed: "Failed" }[g]}</span>
+              </div>
+              {open && (
+                <div className="prows">
+                  {rows.map(([id, label]) => (
+                    <div key={id} className={states[id] === "pending" ? "prow pending" : states[id] === "failed" ? "prow failed" : "prow"}>
+                      {states[id] === "done" ? (
+                        <Icon name="check" size={16} />
+                      ) : states[id] === "running" ? (
+                        <Icon name="spinner" size={16} />
+                      ) : states[id] === "failed" ? (
+                        <Icon name="error" size={16} />
+                      ) : (
+                        <span className="dot" aria-hidden="true" />
+                      )}
+                      <span>{label}</span>
+                      <span>{{ pending: "", running: "Now", done: "Done", failed: "Failed" }[states[id]]}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </li>
-          ))}
-        </ol>
-        {error && (
-          <>
-            <pre className="error">{error}</pre>
-            <button onClick={() => setAttempt((n) => n + 1)}>Retry</button>
-          </>
-        )}
-      </section>
+          );
+        })}
+      </ol>
+
+      {error && (
+        <Alert>
+          <pre className="snippet">{error}</pre>
+        </Alert>
+      )}
 
       {ready && (
-        <section className="card ready">
-          <h2>Ready</h2>
-          <p>
-            The host is running at {ready.host.url} with {ready.models} model{ready.models === 1 ? "" : "s"} in
-            the catalog.
+        <section className="card" aria-labelledby="ready-title">
+          <h2 id="ready-title" className="status">
+            <Icon name="check" />
+            Ready
+          </h2>
+          <p className="num">
+            The host is running at <code>{ready.host.url}</code> with {ready.models} model{ready.models === 1 ? "" : "s"} in the
+            catalog.
           </p>
-          {engine === "local" ? (
-            <>
-              <p className="lead">Pick and download a model in the dashboard. Glint Studio stays in the menu bar.</p>
-              <button className="primary" onClick={() => invoke("open_dashboard").catch((e) => setError(String(e)))}>
-                Open the dashboard
-              </button>
-            </>
-          ) : (
-            <button className="primary" onClick={() => onReady(ready.host)}>
-              Add your API key
-            </button>
-          )}
+          {engine === "local" && <p className="muted">Pick and download a model in the dashboard. Glint Studio stays in the menu bar.</p>}
         </section>
       )}
 
-      <button className="back" onClick={onBack} disabled={!ready && !error}>
-        Back
-      </button>
+      <div className="page-foot">
+        <button className="ghost" onClick={onBack} disabled={!ready && !error}>
+          Back
+        </button>
+        <div className="actions">
+          {error && <button onClick={() => setAttempt((n) => n + 1)}>Retry</button>}
+          {ready &&
+            (engine === "local" ? (
+              <button className="primary" onClick={() => invoke("open_dashboard").catch((e) => setError(String(e)))}>
+                Open the dashboard
+              </button>
+            ) : (
+              <button className="primary" onClick={() => onReady(ready.host)}>
+                Add your API key
+              </button>
+            ))}
+        </div>
+      </div>
     </main>
   );
 }

@@ -10,6 +10,7 @@ from app.comfy_client import (
     ComfyConnectionError,
     ComfyExecutionError,
     ComfyTimeoutError,
+    PreviewFn,
     ProgressFn,
 )
 from app.errors import ApiError
@@ -42,7 +43,9 @@ class ComfyUIProvider:
         except ComfyConnectionError as exc:
             raise ApiError("engine_down", str(exc)) from exc
 
-    async def generate(self, request: ProviderRequest, on_progress: ProgressFn | None = None) -> ProviderResult:
+    async def generate(
+        self, request: ProviderRequest, on_progress: ProgressFn | None = None, on_preview: PreviewFn | None = None
+    ) -> ProviderResult:
         p = request.params
         # model_construct: the composed prompt may pass GenerateRequest's 4000-char cap, and the
         # values were already checked against the model's limits.
@@ -57,7 +60,7 @@ class ComfyUIProvider:
         )
         try:
             workflow, mapping = load_workflow_bundle(self.workflows_dir, request.model.workflow or "")
-            return await self.run_workflow(workflow, mapping, fields, on_progress)
+            return await self.run_workflow(workflow, mapping, fields, on_progress, on_preview)
         except (WorkflowNotFoundError, WorkflowValidationError) as exc:
             raise ApiError("workflow_failed", f"{request.model.name}: {exc}") from exc
 
@@ -67,6 +70,7 @@ class ComfyUIProvider:
         mapping: WorkflowMapping,
         fields: GenerateRequest,
         on_progress: ProgressFn | None = None,
+        on_preview: PreviewFn | None = None,
     ) -> ProviderResult:
         """Fill and run any API-format workflow. Raises WorkflowValidationError when the mapping
         doesn't fit the workflow, so callers running a user's own workflow can report it as such."""
@@ -77,6 +81,7 @@ class ComfyUIProvider:
                 output_node_id=mapping.output_node_id,
                 timeout_seconds=self.timeout_seconds,
                 on_progress=on_progress,
+                on_preview=on_preview,
             )
         except ComfyTimeoutError as exc:
             raise ApiError("timeout", str(exc)) from exc
