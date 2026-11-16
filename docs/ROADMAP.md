@@ -79,10 +79,11 @@ own window is only for first-run setup, repair, and cloud keys.
 - The Python host keeps the tested bridge code. Every backend, local or cloud, sits behind one provider interface, so styles, clamping, jobs, errors and the API work the same for all of them.
 - The host also serves the dashboard and does everything that needs it running anyway: model recommendations (from the app's scan, written to `hardware.json`), resumable checked downloads, and job statistics. One codebase, testable with pytest.
 
-**Dashboard security.** The host binds 127.0.0.1 and has a new API key every launch.
+**Dashboard security.** The host binds 127.0.0.1 (port 7788, or its last port, or a free one) and keeps one API key in the OS keychain, so apps keep working across restarts.
 - The menu-bar app opens `/login?exp=…&sig=…`, signed with HMAC-SHA256 of the key and valid for 60 seconds, once.
 - The host swaps it for an HttpOnly, SameSite=Strict session cookie. The page uses the cookie once to fetch the key, keeps it in memory, and calls the API like any other client.
 - The host refuses any `Host` header but `127.0.0.1` and `localhost`, so a web page can't reach it through DNS rebinding.
+- The events WebSocket takes the key as a subprotocol (`glint.v1, glint.key.<key>`), not in the URL, so it never lands in access logs.
 
 ## Repo structure
 
@@ -91,7 +92,7 @@ glint-studio/
   apps/desktop/
     src/                       React UI
       pages/ Onboarding, Setup, Providers (the setup window)
-      dashboard/ Overview, Models, Connect (served by the host; dashboard.html entry)
+      dashboard/ Overview, Generate, Styles, Models, Connect (served by the host; dashboard.html entry)
     src-tauri/src/
       main.rs  scan.rs  runtime.rs  supervisor.rs  secrets.rs
       dashboard.rs  paths.rs  tunnel.rs (Phase 6)
@@ -334,9 +335,11 @@ Each phase ends with a working milestone, and each can ship on its own.
 - **Generate page:** model picker (local and cloud, with the "Cloud" badge), style chips, prompt, queue with progress and cancel, gallery with metadata.
 - **Plain-language controls by default:** Quality (Fast, Standard or Best, from the catalog `quality` presets), Shape (from the model's allowed sizes), and Variation number (the seed, hidden for models without seeds). Sampler, steps and CFG go under an "Advanced" toggle.
 - **Styles page:** editor with live composed-prompt preview, reset, import and export.
+- Done so far (2026-11-16): the Generate page (prompt, style chips, model with a cloud note, Shape, seed, gallery with progress, cancel and save) and the Styles page (edit, duplicate, new, reset to default, delete, live preview), on `PUT/DELETE /api/v1/styles/{id}`. Checked against a mock image provider.
+- Still to do: Quality presets and the Advanced toggle, style import/export, and following jobs over the events socket instead of polling.
 
 **Phase 6 – Server and remote (about 1 week)**
-- LAN toggle, API key management with scopes (`local` by default, `cloud` opt-in, optional daily cap), `tunnel.rs`, and the Connect page grows endpoint docs and snippets. A key that survives restarts, so other apps don't need a new one each launch.
+- LAN toggle, API key management with scopes (`local` by default, `cloud` opt-in, optional daily cap), `tunnel.rs`, and the Connect page grows endpoint docs and snippets. A key that survives restarts, so other apps don't need a new one each launch (done 2026-11-16: keychain key and a stable port; rotating it is still to do).
 - **Mobile web page:** when LAN or the tunnel is on, the host serves a small phone-friendly Generate page with the same plain-language controls.
   - To pair a phone, scan a QR code on the Server page. The QR holds the URL and a key just for that phone, which can be revoked.
   - The key stays on that phone. The desktop UI still never keeps a key in browser storage (rule 5).

@@ -14,6 +14,7 @@ use crate::runtime::{self, HostInfo, Runtime};
 
 const SERVICE: &str = "dev.glintstudio.app";
 const HOST: &str = "host"; // the host's process name in runtime.rs
+const HOST_KEY_ENTRY: &str = "glint-host-api-key"; // not a provider id, so list_providers never shows it
 
 #[derive(Debug, Deserialize)]
 struct ProvidersFile {
@@ -138,6 +139,20 @@ fn known(app: &AppHandle, id: &str) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!("There's no provider '{id}' that takes a key."))
+    }
+}
+
+/// The host's own API key: made once, then kept in the keychain so it survives restarts.
+pub fn host_api_key() -> Result<String, String> {
+    let entry = entry(HOST_KEY_ENTRY)?;
+    match entry.get_password() {
+        Ok(key) => Ok(key),
+        Err(keyring::Error::NoEntry) => {
+            let key = runtime::new_key()?;
+            entry.set_password(&key).map_err(|e| format!("Couldn't save the host key: {e}"))?;
+            Ok(key)
+        }
+        Err(e) => Err(format!("Couldn't read the host key: {e}")),
     }
 }
 

@@ -78,8 +78,9 @@ curl http://127.0.0.1:8000/v1/images/generations -H "Authorization: Bearer $API_
 ```
 
 The same body on `POST /api/v1/jobs` queues the job and answers at once with its `id`. Follow it with
-`GET /api/v1/jobs/{id}` or the `WS /api/v1/events` stream (key in the header or `?api_key=`), and
-cancel it with `DELETE /api/v1/jobs/{id}`.
+`GET /api/v1/jobs/{id}` or the `WS /api/v1/events` stream, and cancel it with `DELETE /api/v1/jobs/{id}`.
+The stream takes the key in the header, or (for browsers, which can't set headers on a WebSocket) as the
+subprotocols `glint.v1, glint.key.<key>`; `?api_key=` still works but puts the key in server logs.
 
 Desktop (needs Node 22+ and [Rust + the Tauri prerequisites](https://tauri.app/start/prerequisites/)):
 
@@ -92,8 +93,9 @@ npm run tauri dev
 On first run the app installs its own runtime into the OS app-data folder (`dev.glintstudio.app`):
 uv, Python 3.12, a venv, and the host's dependencies (about 50 MB, no admin rights). Choosing the
 local engine also installs PyTorch for your GPU and ComfyUI v0.45.0 (about 2 GB of disk on an Apple
-Silicon Mac; more with NVIDIA or AMD, whose PyTorch builds are larger). It then starts ComfyUI (if installed) and the host on free localhost ports,
-with a new API key each launch; logs go to `logs/host.log` and `logs/comfyui.log` there.
+Silicon Mac; more with NVIDIA or AMD, whose PyTorch builds are larger). It then starts ComfyUI (if installed) on a free localhost port and the host on
+127.0.0.1:7788 (or its previous port, or a free one if that's taken), with an API key kept in the OS keychain so
+apps keep working across restarts; logs go to `logs/host.log` and `logs/comfyui.log` there.
 When setup is done the window hides and the dashboard opens in your browser; from then on the app
 starts in the menu bar. The dashboard's Models page suggests models that fit your GPU and downloads
 them into `models/` there (resumable, each file checked against the catalog's sha256). Closing the

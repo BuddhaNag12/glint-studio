@@ -23,9 +23,21 @@ def extract_api_token(authorization: str | None, x_api_key: str | None) -> str |
     return None
 
 
+WS_PROTOCOL = "glint.v1"
+WS_KEY_PREFIX = "glint.key."
+
+
+def ws_protocol_key(headers: Mapping[str, str]) -> str | None:
+    """The key a browser offers as a subprotocol, ["glint.v1", "glint.key.<key>"], so it stays out of URLs and logs."""
+    for proto in (headers.get("sec-websocket-protocol") or "").split(","):
+        if proto.strip().startswith(WS_KEY_PREFIX):
+            return proto.strip()[len(WS_KEY_PREFIX):]
+    return None
+
+
 def is_valid_api_key(settings, headers: Mapping[str, str], query_key: str | None = None) -> bool:
-    """For WebSockets, where browsers can't set headers: the headers, or an ?api_key= query."""
-    token = extract_api_token(headers.get("authorization"), headers.get("x-api-key")) or query_key
+    """For WebSockets, where browsers can't set headers: the headers, a subprotocol, or an ?api_key= query."""
+    token = extract_api_token(headers.get("authorization"), headers.get("x-api-key")) or ws_protocol_key(headers) or query_key
     return bool(
         settings.is_api_key_configured
         and token

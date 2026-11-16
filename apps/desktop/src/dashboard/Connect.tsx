@@ -46,7 +46,7 @@ export default function Connect({ conn }: { conn: Connection }) {
             <Copy text={conn.api_key} label="API key" />
           </dd>
         </dl>
-        <p className="lead note">The key changes each time Glint Studio starts.</p>
+        <p className="lead note">The address and key stay the same when Glint Studio restarts. The key is kept in this computer's keychain.</p>
       </section>
       <section className="card">
         <div className="model-head">

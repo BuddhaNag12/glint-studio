@@ -5,9 +5,11 @@ import "./dashboard.css";
 import { connect, Connection } from "./api";
 import Overview from "./Overview";
 import Models from "./Models";
+import Generate from "./Generate";
+import Styles from "./Styles";
 import Connect from "./Connect";
 
-const PAGES = { overview: "Overview", models: "Models", connect: "Connect" } as const;
+const PAGES = { overview: "Overview", generate: "Generate", styles: "Styles", models: "Models", connect: "Connect" } as const;
 type Page = keyof typeof PAGES;
 const fromHash = (): Page => (location.hash.slice(1) in PAGES ? (location.hash.slice(1) as Page) : "overview");
 
@@ -38,6 +40,8 @@ function Dashboard() {
       <main className="page wide">
         {error && <p className="error">{error}</p>}
         {conn && page === "overview" && <Overview />}
+        {conn && page === "generate" && <Generate />}
+        {conn && page === "styles" && <Styles />}
         {conn && page === "models" && <Models />}
         {conn && page === "connect" && <Connect conn={conn} />}
       </main>

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import re
 import time
@@ -28,13 +29,15 @@ from fastapi.responses import FileResponse, JSONResponse
 from starlette.websockets import WebSocketDisconnect
 
 from app.auth import (
+    WS_PROTOCOL,
     build_signed_image_query,
     is_valid_api_key,
     require_api_key,
     verify_api_key,
     verify_image_signature,
+    ws_protocol_key,
 )
-from app.catalog import CatalogModel, load_catalog, resolve_params
+from app.catalog import ID_PATTERN, CatalogModel, load_catalog, resolve_params
 from app.comfy_client import ComfyClient, ComfyImageOutput, infer_mime_and_ext
 from app.config import Settings
 from app.dashboard import Sessions
@@ -279,8 +282,52 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/v1/styles", dependencies=[Depends(require_api_key)])
     async def list_styles(request: Request) -> dict:
+        """Every style; builtin: ships with the app (can be reset), edited: a user copy is in use."""
+        cfg: Settings = request.app.state.settings
         styles: dict[str, Style] = request.app.state.styles
-        return {"styles": [s.model_dump(mode="json") for s in styles.values()]}
+        user = cfg.user_styles_dir
+        return {
+            "styles": [
+                s.model_dump(mode="json")
+                | {
+                    "builtin": (cfg.catalog_dir / "styles" / f"{s.id}.json").is_file(),
+                    "edited": bool(user and (user / f"{s.id}.json").is_file()),
+                }
+                for s in styles.values()
+            ]
+        }
+
+    def _user_style_path(request: Request, style_id: str) -> Path:
+        cfg: Settings = request.app.state.settings
+        if cfg.user_styles_dir is None:
+            raise ApiError("bad_params", "Styles can't be saved: USER_STYLES_DIR isn't set.")
+        if not re.fullmatch(ID_PATTERN, style_id):
+            raise ApiError("bad_params", "A style id is lowercase letters, digits, - and _.")
+        return cfg.user_styles_dir / f"{style_id}.json"
+
+    def _reload_styles(request: Request) -> None:
+        cfg: Settings = request.app.state.settings
+        request.app.state.styles = load_styles(cfg.catalog_dir / "styles", cfg.user_styles_dir)
+
+    @app.put("/api/v1/styles/{style_id}", dependencies=[Depends(require_api_key)])
+    async def save_style(style_id: str, body: Style, request: Request) -> dict:
+        """Saves a user copy: a new style, or an edit that replaces the built-in with the same id."""
+        if body.id != style_id:
+            raise ApiError("bad_params", "The style's id must match the URL.")
+        path = _user_style_path(request, style_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(body.model_dump(mode="json", exclude_defaults=True), indent=2) + "\n", encoding="utf-8")
+        _reload_styles(request)
+        return body.model_dump(mode="json")
+
+    @app.delete("/api/v1/styles/{style_id}", status_code=status.HTTP_204_NO_CONTENT, dependencies=[Depends(require_api_key)])
+    async def delete_style(style_id: str, request: Request) -> None:
+        """Deletes the user copy: a built-in goes back to its default, a user style is gone."""
+        path = _user_style_path(request, style_id)
+        if not path.is_file():
+            raise ApiError("not_found", f"There's no saved style '{style_id}'.")
+        path.unlink()
+        _reload_styles(request)
 
     @app.post("/api/v1/providers/{provider_id}/check", dependencies=[Depends(require_api_key)])
     async def check_provider(provider_id: str, request: Request) -> dict:
@@ -394,7 +441,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not is_valid_api_key(ws.app.state.settings, ws.headers, ws.query_params.get("api_key")):
             await ws.close(code=1008, reason="Missing or invalid API key.")
             return
-        await ws.accept()
+        # A browser drops the connection unless the server echoes one of the protocols it offered.
+        await ws.accept(subprotocol=WS_PROTOCOL if ws_protocol_key(ws.headers) else None)
         jobs: JobQueue = ws.app.state.jobs
         listener = jobs.subscribe()
         try:

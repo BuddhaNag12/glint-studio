@@ -82,7 +82,7 @@ export default function Overview() {
                     <progress value={j.progress} max={1} aria-label={`${j.model} progress`} />
                   ) : (
                     <span className={j.status === "failed" ? "error" : "muted"}>
-                      {j.status === "queued" ? `waiting (#${j.queue_position})` : j.status}
+                      {j.status === "queued" ? `waiting${j.queue_position ? ` (#${j.queue_position})` : ""}` : j.status}
                       {j.status === "done" && ` · ${secs(j.elapsed_ms)}`}
                       {j.error && ` · ${j.error.code}`}
                     </span>

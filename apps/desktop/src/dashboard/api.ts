@@ -13,7 +13,8 @@ export async function connect(): Promise<Connection> {
 }
 
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const res = await fetch(path, { ...init, headers: { Authorization: `Bearer ${conn?.api_key}` } });
+  const headers = { "Content-Type": "application/json", Authorization: `Bearer ${conn?.api_key}` };
+  const res = await fetch(path, { ...init, headers });
   const body = await res.json().catch(() => null);
   if (!res.ok) throw new Error(body?.error?.message ?? `${res.status} ${res.statusText}`);
   return body as T;
@@ -25,7 +26,8 @@ export function onJobEvents(handle: (e: JobEvent) => void): () => void {
   let stopped = false;
   const open = () => {
     const scheme = location.protocol === "https:" ? "wss" : "ws";
-    ws = new WebSocket(`${scheme}://${location.host}/api/v1/events?api_key=${encodeURIComponent(conn?.api_key ?? "")}`);
+    // The key rides as a subprotocol, so it never lands in a URL or the host log.
+    ws = new WebSocket(`${scheme}://${location.host}/api/v1/events`, ["glint.v1", `glint.key.${conn?.api_key ?? ""}`]);
     ws.onmessage = (m) => handle(JSON.parse(m.data));
     ws.onclose = () => !stopped && setTimeout(open, 3000);
   };
@@ -64,6 +66,25 @@ export type System = {
   queue: { running: number; queued: number };
   hardware: Hardware;
   models_bytes: number;
+};
+
+// Mirror CatalogModel in app/catalog.py and Style in app/styles.py (the fields the dashboard uses).
+export type Model = {
+  id: string;
+  name: string;
+  cloud: boolean;
+  defaults: { shape: string };
+  limits: { sizes: Record<string, [number, number]>; supports_negative: boolean; supports_seed: boolean };
+};
+export type Style = {
+  id: string;
+  name: string;
+  icon: string;
+  prefix: string;
+  suffix: string;
+  negative: string;
+  overrides: Record<string, unknown>;
+  models: string[] | null;
 };
 
 export const gb = (bytes: number) => `${(bytes / 1e9).toFixed(1)} GB`;

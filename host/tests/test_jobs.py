@@ -10,6 +10,7 @@ import time
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 from app.comfy_client import ComfyClient
 from app.errors import ApiError
@@ -115,6 +116,13 @@ def test_jobs_api_queues_reports_and_formats_the_result(tmp_path) -> None:
                 events.append(ws.receive_json())
         assert [e["event"] for e in events] == ["queued", "started", "progress", "done"]
         assert events[2]["progress"] == 0.5 and {e["id"] for e in events} == {job_id}
+
+        # The dashboard offers the key as a subprotocol, and the host must echo glint.v1 back.
+        with client.websocket_connect("/api/v1/events", subprotocols=["glint.v1", "glint.key.test-secret-key"]) as ws:
+            assert ws.accepted_subprotocol == "glint.v1"
+        bad = ["glint.v1", "glint.key.wrong"]
+        with pytest.raises(WebSocketDisconnect), client.websocket_connect("/api/v1/events", subprotocols=bad) as ws:
+            ws.receive_json()
 
         body = client.get(f"/api/v1/jobs/{job_id}", headers=AUTH).json()
         assert body["status"] == "done" and body["queue_position"] == 0 and body["error"] is None

@@ -4,6 +4,7 @@
 
 use std::fs;
 use std::io;
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
@@ -135,8 +136,16 @@ pub async fn ensure_host(app: &AppHandle) -> Result<HostInfo, String> {
     for dir in dirs {
         fs::create_dir_all(&dir).map_err(|e| format!("Couldn't create {}: {e}", dir.display()))?;
     }
-    let port = free_port().map_err(|e| e.to_string())?;
-    let info = HostInfo { url: format!("http://127.0.0.1:{port}"), api_key: new_key()? };
+    // The same address and key as last time, so apps set up with them and open dashboard tabs keep working.
+    let port = host_port(host.as_ref()).map_err(|e| e.to_string())?;
+    let api_key = match host.as_ref() {
+        Some(info) => info.api_key.clone(),
+        None => crate::secrets::host_api_key().or_else(|e| {
+            eprintln!("host key: {e}; using a key for this launch only");
+            new_key()
+        })?,
+    };
+    let info = HostInfo { url: format!("http://127.0.0.1:{port}"), api_key };
     let mut spec = host_spec(&paths, &resource_dir(app)?, port, &info.api_key);
     let mut waits = vec![(HOST, HOST_START_TIMEOUT, spec.log_file.clone())];
     if engine {
@@ -439,7 +448,22 @@ fn find_file(dir: &Path, name: &str) -> Option<PathBuf> {
     None
 }
 
-fn new_key() -> Result<String, String> {
+/// The host's usual port; another one only when something else holds it.
+const HOST_PORT: u16 = 7788;
+
+fn host_port(last: Option<&HostInfo>) -> io::Result<u16> {
+    let last = last.and_then(|i| i.url.rsplit(':').next()?.parse().ok());
+    // shortcut: probe-then-release can race another app for the port; the host then fails to start and the
+    // next try picks a free one. Pass the bound socket to the host if that ever shows up.
+    for port in last.into_iter().chain([HOST_PORT]) {
+        if TcpListener::bind(("127.0.0.1", port)).is_ok() {
+            return Ok(port);
+        }
+    }
+    free_port()
+}
+
+pub(crate) fn new_key() -> Result<String, String> {
     let mut bytes = [0u8; 32];
     getrandom::fill(&mut bytes).map_err(|e| format!("No randomness for the API key: {e}"))?;
     Ok(hex(&bytes))
@@ -554,6 +578,18 @@ mod tests {
         fs::write(dir.join("uv-x/inner/uv"), "").unwrap();
         assert_eq!(find_file(&dir, "uv"), Some(dir.join("uv-x/inner/uv")));
         assert_eq!(find_file(&dir, "nope"), None);
+    }
+
+    #[test]
+    fn host_port_keeps_the_last_port_while_it_is_free() {
+        let info = |port: u16| HostInfo { url: format!("http://127.0.0.1:{port}"), api_key: String::new() };
+        let free = free_port().unwrap();
+        assert_eq!(host_port(Some(&info(free))).unwrap(), free);
+        let held = TcpListener::bind("127.0.0.1:0").unwrap();
+        let busy = held.local_addr().unwrap().port();
+        let port = host_port(Some(&info(busy))).unwrap();
+        assert_ne!(port, busy);
+        TcpListener::bind(("127.0.0.1", port)).unwrap();
     }
 
     #[test]

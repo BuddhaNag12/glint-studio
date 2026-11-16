@@ -432,6 +432,40 @@ def test_user_styles_dir_replaces_the_default_style(tmp_path: Path) -> None:
         assert fake_comfy.last_workflow["68"]["inputs"]["width"] == 1024  # no shape override now
 
 
+def test_styles_can_be_edited_reset_and_added(tmp_path: Path) -> None:
+    user_styles = tmp_path / "user-styles"  # created on the first save
+    app, _, _ = _setup_test_app(tmp_path, user_styles_dir=user_styles)
+    auth = {"Authorization": "Bearer test-secret-key"}
+    with TestClient(app) as client:
+
+        def styles() -> dict:
+            return {s["id"]: s for s in client.get("/api/v1/styles", headers=auth).json()["styles"]}
+
+        original = styles()["cartoon"]
+        assert original["builtin"] and not original["edited"]
+
+        edit = {"id": "cartoon", "name": "My cartoon", "prefix": "ink"}
+        assert client.put("/api/v1/styles/cartoon", headers=auth, json=edit).status_code == 200
+        assert styles()["cartoon"]["name"] == "My cartoon" and styles()["cartoon"]["edited"]
+        assert json.loads((user_styles / "cartoon.json").read_text()) == edit
+
+        assert client.delete("/api/v1/styles/cartoon", headers=auth).status_code == 204
+        assert styles()["cartoon"] == original  # reset to the shipped one
+
+        mine = {"id": "my-style", "name": "Mine"}
+        assert client.put("/api/v1/styles/my-style", headers=auth, json=mine).status_code == 200
+        assert not styles()["my-style"]["builtin"]
+        assert client.delete("/api/v1/styles/my-style", headers=auth).status_code == 204
+        assert "my-style" not in styles()
+
+        mismatch = client.put("/api/v1/styles/other", headers=auth, json=mine)
+        assert mismatch.status_code == 422 and mismatch.json()["error"]["code"] == "bad_params"
+        bad_id = client.put("/api/v1/styles/..%2Fx", headers=auth, json={"id": "..%2Fx", "name": "x"})
+        assert bad_id.status_code in (404, 422)
+        assert client.delete("/api/v1/styles/cartoon", headers=auth).status_code == 404
+        assert client.put("/api/v1/styles/my-style", json=mine).status_code == 401
+
+
 @pytest.mark.parametrize(
     ("error", "code"),
     [
