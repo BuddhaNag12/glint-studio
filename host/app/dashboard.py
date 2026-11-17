@@ -28,6 +28,7 @@ from app.keys import Key, KeyFields
 from app.local_models import (
     Downloads,
     chosen_variant,
+    deletable_files,
     load_hardware,
     measured_speed,
     memory_split,
@@ -275,6 +276,40 @@ async def system(request: Request) -> dict:
         "hardware": hw,
         "models_bytes": models_bytes,
     }
+
+
+@router.delete("/api/v1/local-models/{model_id}", dependencies=[Depends(require_main_key)])
+async def delete_model(model_id: str, request: Request) -> dict:
+    """Deletes a downloaded model from the app's models folder. Files another installed model uses stay."""
+    model = _local_model(request, model_id)
+    if request.app.state.downloads.busy:
+        raise ApiError("bad_params", "A model is downloading. Wait for it or cancel it, then delete.")
+    engine = request.app.state.engine
+    if engine.busy():
+        raise ApiError("bad_params", "Images are being made. Delete the model when they finish.")
+    if engine.model == model.id:
+        try:
+            await engine.unload()
+        except ApiError:
+            engine.reset()  # the engine is down, so nothing is in memory
+    files = await asyncio.to_thread(
+        deletable_files, _models_dir(request), _roots(request), model, list(request.app.state.models.values())
+    )
+    if not files:
+        raise ApiError("not_found", f"No files of {model.name} in Glint's models folder. Files in a linked folder stay.")
+
+    def remove() -> int:
+        freed = 0
+        for p in files:
+            try:
+                size = p.stat().st_size
+                p.unlink()
+            except OSError as exc:  # Windows: another app has the file open
+                raise ApiError("bad_params", f"Couldn't delete {p.name}: {exc.strerror}. Close apps using it and try again.") from exc
+            freed += size
+        return freed
+
+    return {"deleted": len(files), "freed_bytes": await asyncio.to_thread(remove)}
 
 
 # --- the model in memory, and model folders linked from another ComfyUI ---

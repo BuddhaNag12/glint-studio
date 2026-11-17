@@ -16,7 +16,7 @@ from app.config import Settings
 from app.dashboard import SESSION_MAX_AGE, Sessions, login_signature
 from app.errors import ApiError
 from app.keys import Keys
-from app.local_models import Downloads, chosen_variant, recommend
+from app.local_models import Downloads, chosen_variant, deletable_files, recommend
 from tests.test_api import _setup_test_app
 
 GB = 1e9
@@ -327,6 +327,8 @@ def test_stats_and_system(tmp_path: Path) -> None:
         assert local["models"][0]["id"] == "z-image-turbo"
         assert client.get("/api/v1/local-models").status_code == 401
         assert client.post("/api/v1/local-models/nope/download", headers=AUTH).status_code == 404
+        assert client.delete("/api/v1/local-models/nope", headers=AUTH).status_code == 404
+        assert client.delete("/api/v1/local-models/nope").status_code == 401
 
 
 def test_settings_parse_allowed_hosts() -> None:
@@ -350,3 +352,30 @@ def test_logs_show_the_end_of_a_known_log_only(tmp_path: Path, monkeypatch) -> N
         # A big log is read from its end, and the cut-off first line is dropped.
         monkeypatch.setattr("app.dashboard.LOG_TAIL_BYTES", 40)
         assert client.get("/api/v1/logs", headers=AUTH).json()["lines"] == ["INFO:     line 98", "INFO:     line 99"]
+
+
+def test_delete_keeps_files_another_installed_model_uses(tmp_path: Path) -> None:
+    own, linked = tmp_path / "models", tmp_path / "linked"
+
+    def file(dest: str) -> ModelFile:
+        return ModelFile.model_construct(url="", sha256="", bytes=3, dest=dest)
+
+    def put(root: Path, dest: str) -> None:
+        (root / dest).parent.mkdir(parents=True, exist_ok=True)
+        (root / dest).write_bytes(b"abc")
+
+    a = model("a", 1, [Variant.model_construct(precision="bf16", min_vram_gb=0, files=[file("diffusion_models/a.st"), file("vae/ae.st")])])
+    b = model("b", 1, [Variant.model_construct(precision="bf16", min_vram_gb=0, files=[file("diffusion_models/b.st"), file("vae/ae.st")])])
+    c = model("c", 1, [Variant.model_construct(precision="bf16", min_vram_gb=0, files=[file("diffusion_models/c.st")])])
+    for dest in ("diffusion_models/a.st", "diffusion_models/a.st.part", "vae/ae.st", "diffusion_models/b.st"):
+        put(own, dest)
+    put(linked, "diffusion_models/c.st")
+    roots = [own, linked]
+
+    # b is installed and shares the VAE, so only a's own file and its leftover .part go.
+    assert deletable_files(own, roots, a, [a, b, c]) == [own / "diffusion_models/a.st", own / "diffusion_models/a.st.part"]
+    # With b gone, the VAE goes too.
+    (own / "diffusion_models/b.st").unlink()
+    assert own / "vae/ae.st" in deletable_files(own, roots, a, [a, b, c])
+    # A model that lives only in a linked folder has nothing of ours to delete.
+    assert deletable_files(own, roots, c, [a, b, c]) == []

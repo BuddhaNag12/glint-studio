@@ -199,6 +199,14 @@ def model_installed(roots: list[Path], model: CatalogModel) -> bool:
     return any(variant_installed(roots, v) for v in model.variants)
 
 
+def deletable_files(models_dir: Path, roots: list[Path], model: CatalogModel, others: list[CatalogModel]) -> list[Path]:
+    """The model's files (and leftover .part files) in our own models folder, minus any file another
+    installed model also uses. Linked folders belong to another ComfyUI and are never touched."""
+    shared = {f.dest for m in others if m.id != model.id for v in m.variants if variant_installed(roots, v) for f in v.files}
+    dests = sorted({f.dest for v in model.variants for f in v.files} - shared)
+    return [p for d in dests for p in (models_dir / d, models_dir / (d + ".part")) if p.is_file()]
+
+
 def load_hardware(hardware_file: Path | None, models_dir: Path, engine_file: Path | None = None) -> dict:
     """The app's scan, with free disk measured now (it changes as models download).
     On shared memory the Aggressive memory guard lets models use up to RAM_SHARE of it."""
