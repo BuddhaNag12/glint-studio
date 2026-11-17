@@ -6,7 +6,7 @@ import { ProviderKeys } from "./Providers";
 
 // Mirrors Progress and HostInfo in src-tauri/src/runtime.rs; "start" is the start_host call.
 type StepId = "uv" | "python" | "venv" | "host" | "torch" | "comfyui" | "start";
-type Progress = { step: Exclude<StepId, "start">; done: boolean };
+type Progress = { step: Exclude<StepId, "start">; done: boolean; detail: string | null };
 export type HostInfo = { url: string; api_key: string };
 export type Installed = { host: HostInfo; models: number };
 type StepState = "pending" | "running" | "done" | "failed";
@@ -41,6 +41,8 @@ export default function Setup({
 }) {
   const groups = groupsFor(engine);
   const [states, setStates] = useState(allPending);
+  // The running step's latest line and bytes received, or "Already installed" once it's done.
+  const [details, setDetails] = useState<Partial<Record<StepId, string>>>({});
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
 
@@ -50,6 +52,7 @@ export default function Setup({
     let current: StepId = "uv";
     (async () => {
       setStates(allPending());
+      setDetails({});
       setError(null);
       try {
         // One channel per command: Tauri numbers each command's messages from 0 and closes the
@@ -59,6 +62,7 @@ export default function Setup({
           onProgress.onmessage = (p) => {
             current = p.step;
             set(p.step, p.done ? "done" : "running");
+            if (live) setDetails((prev) => ({ ...prev, [p.step]: p.detail ?? undefined }));
           };
           return onProgress;
         };
@@ -99,6 +103,9 @@ export default function Setup({
 
   const rows = groups.flatMap(([, , r]) => r);
   const finished = rows.filter(([id]) => states[id] === "done").length;
+  const stopped = error?.startsWith("Stopped");
+  // Stop kills the running download or install; starting the host isn't one.
+  const stoppable = !error && states.start === "pending";
 
   return (
     <main className="page">
@@ -147,7 +154,7 @@ export default function Setup({
                   {title}
                   <small>{sub}</small>
                 </span>
-                <span>{{ pending: "Waiting", running: "Working…", done: "Done", failed: "Failed" }[g]}</span>
+                <span>{{ pending: "Waiting", running: "Working…", done: "Done", failed: stopped ? "Stopped" : "Failed" }[g]}</span>
               </div>
               {open && (
                 <div className="prows">
@@ -162,8 +169,11 @@ export default function Setup({
                       ) : (
                         <span className="dot" aria-hidden="true" />
                       )}
-                      <span>{label}</span>
-                      <span>{{ pending: "", running: "Now", done: "Done", failed: "Failed" }[states[id]]}</span>
+                      <span>
+                        {label}
+                        {states[id] === "running" && details[id] && <small className="live">{details[id]}</small>}
+                      </span>
+                      <span>{states[id] === "done" && details[id] ? details[id] : { pending: "", running: "Now", done: "Done", failed: stopped ? "Stopped" : "Failed" }[states[id]]}</span>
                     </div>
                   ))}
                 </div>
@@ -173,10 +183,13 @@ export default function Setup({
         })}
       </ol>
 
-      {error && (
-        <Alert>
-          <pre className="snippet">{error}</pre>
-        </Alert>
+      {error && <Alert info={stopped}>{stopped ? error : <pre className="snippet">{error}</pre>}</Alert>}
+
+      {stoppable && (
+        <footer className="page-foot">
+          <span />
+          <button onClick={() => invoke("stop_install")}>Stop</button>
+        </footer>
       )}
 
       {error && (

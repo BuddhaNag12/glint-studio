@@ -6,7 +6,7 @@ import { Alert, CopyButton, Progress } from "./ui";
 // Mirrors server() in host/app/engine_server.py.
 export type MemoryGuard = "safe" | "balanced" | "aggressive" | "custom";
 export type EngineServer = {
-  status: "running" | "starting" | "stopped";
+  status: "running" | "starting" | "stopped" | "not_installed";
   address: string;
   up_since: number | null;
   has_model: boolean;
@@ -17,7 +17,7 @@ export type EngineServer = {
 
 export const restartEngine = () => api<EngineServer>("/api/v1/engine/restart", { method: "POST" });
 
-const STATUS = { running: "Running", starting: "Starting", stopped: "Stopped" } as const;
+const STATUS = { running: "Running", starting: "Starting", stopped: "Stopped", not_installed: "Not installed" } as const;
 const DISMISSED = "glint.first-run-dismissed";
 
 function uptime(since: number) {
@@ -26,7 +26,8 @@ function uptime(since: number) {
 }
 
 /** The engine server at a glance, at the top of the Overview: state, address, memory, restart and unload. */
-export default function ServerCard({ system }: { system: System | null }) {
+/** `onSetup` (the app's Settings window) adds a Finish setup button when the engine isn't installed. */
+export default function ServerCard({ system, onSetup }: { system: System | null; onSetup?: () => void }) {
   const [server, setServer] = useState<EngineServer | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -64,13 +65,25 @@ export default function ServerCard({ system }: { system: System | null }) {
               {server?.up_since && status === "running" && ` · up ${uptime(server.up_since)}`}
             </span>
           </div>
-          <span className={`engine ${status === "stopped" ? "bad" : status === "starting" ? "quiet" : ""}`} role="status">
+          <span className={`engine ${status === "stopped" || status === "not_installed" ? "bad" : status === "starting" ? "quiet" : ""}`} role="status">
             <span className="dot" aria-hidden="true" />
             <span>{STATUS[status]}</span>
           </span>
         </div>
 
         {error && <Alert>{error}</Alert>}
+        {status === "not_installed" && (
+          <Alert info>
+            <span>Engine not installed. Finish setup to make images on this computer.</span>
+            {onSetup && (
+              <span className="actions">
+                <button className="small" onClick={onSetup}>
+                  Finish setup
+                </button>
+              </span>
+            )}
+          </Alert>
+        )}
         {server?.restart_needed && <Alert info>Memory settings changed. Restart the server to apply them.</Alert>}
 
         {server && (
@@ -97,7 +110,7 @@ export default function ServerCard({ system }: { system: System | null }) {
         )}
 
         <div className="actions">
-          <button className="small" disabled={busy || status === "starting"} onClick={() => act(restartEngine)}>
+          <button className="small" disabled={busy || status === "starting" || status === "not_installed"} onClick={() => act(restartEngine)}>
             Restart server
           </button>
           <button

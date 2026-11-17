@@ -166,6 +166,20 @@ pub async fn rotate_host_key(app: AppHandle, state: State<'_, Runtime>) -> Resul
     restart_host(app, state).await
 }
 
+/// Removes the host key and every provider key, for Erase. A keychain can't be listed, so the ids come
+/// from the user's providers.json and the shipped list.
+pub fn erase_keys(paths: &Paths, resources: &Path) {
+    let mut ids = vec![HOST_KEY_ENTRY.to_string()];
+    for file in [paths.providers_file(), resources.join("host").join("providers.example.json")] {
+        ids.extend(read_providers(&file).unwrap_or_default().into_iter().map(|p| p.id));
+    }
+    for id in ids {
+        if let Ok(e) = entry(&id) {
+            let _ = e.delete_credential(); // NoEntry is fine; other errors leave a key, not data
+        }
+    }
+}
+
 fn entry(id: &str) -> Result<keyring::Entry, String> {
     keyring::Entry::new(SERVICE, id).map_err(|e| format!("The keychain isn't available: {e}"))
 }

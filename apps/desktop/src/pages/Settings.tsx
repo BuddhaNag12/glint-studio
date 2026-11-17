@@ -93,7 +93,7 @@ export default function Settings({ onSetup }: { onSetup: () => void }) {
   const content: Record<Pane, () => ReactNode> = {
     status: () => (
       <>
-        <ServerCard system={system} />
+        <ServerCard system={system} onSetup={onSetup} />
         <section className="card card-head">
           <div>
             <h2>Dashboard</h2>

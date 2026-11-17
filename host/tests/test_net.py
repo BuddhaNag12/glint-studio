@@ -140,7 +140,7 @@ def test_lan_open_generation_only_for_direct_lan_requests_to_generation_routes(t
         # Never the dashboard's data, settings, keys or admin routes.
         for method, path in [("GET", "/api/v1/keys"), ("POST", "/api/v1/keys"), ("GET", "/api/v1/network"),
                              ("GET", "/api/v1/stats"), ("GET", "/api/v1/local-models"), ("GET", "/api/v1/settings/security"),
-                             ("PUT", "/api/v1/settings/security"), ("DELETE", "/api/v1/styles/cartoon"),
+                             ("PUT", "/api/v1/settings/security"), ("POST", "/api/v1/settings/erase"), ("DELETE", "/api/v1/styles/cartoon"),
                              ("POST", "/api/v1/engine/load"), ("POST", "/api/v1/generate")]:
             assert phone.request(method, path, json={}).status_code == 401, path
         assert phone.get("/api/v1/dashboard/connect").status_code == 400
@@ -178,6 +178,28 @@ def test_security_settings_endpoints(tmp_path: Path) -> None:
         assert res.json()["error"]["code"] == "forbidden"
         lan = TestClient(app, client=("192.168.1.20", 50000))
         assert lan.put("/api/v1/settings/security", json={"lan_open_generation": False}, headers={**AUTH, "Host": "testserver"}).status_code == 400
+
+
+def test_erase_measures_the_data_folder_and_asks_the_app(tmp_path: Path) -> None:
+    models = tmp_path / "models"
+    (models / "checkpoints").mkdir(parents=True)
+    (models / "checkpoints" / "m.safetensors").write_bytes(b"x" * 1000)
+    outside = tmp_path.parent / f"{tmp_path.name}-linked"
+    outside.mkdir()
+    (outside / "big.safetensors").write_bytes(b"x" * 5000)
+    (models / "linked").symlink_to(outside)  # not followed, so not counted
+    engine = tmp_path / "engine.json"
+    engine.write_text("{}")
+    app, _, _ = _setup_test_app(tmp_path, engine_file=engine, models_dir=models, keys_file=tmp_path / "keys.json")
+    with TestClient(app, client=LOCAL) as client:
+        info = client.get("/api/v1/settings/erase", headers=AUTH).json()
+        assert info["folder"] == str(tmp_path) and info["models_bytes"] == 1000 and info["linked_folders"] == 0
+        assert info["total_bytes"] >= 1000 + len(engine.read_text()) and info["total_bytes"] < 5000
+        token = client.post("/api/v1/keys", json={"name": "App"}, headers=AUTH).json()["key"]
+        assert client.post("/api/v1/settings/erase", headers={"X-API-Key": token}).json()["error"]["code"] == "forbidden"
+        assert not (tmp_path / "erase_requested").exists()
+        assert client.post("/api/v1/settings/erase", headers=AUTH).status_code == 202
+        assert (tmp_path / "erase_requested").exists()
 
 
 def test_extra_keys_cannot_open_the_dashboard(tmp_path: Path) -> None:

@@ -25,6 +25,8 @@ class Settings(BaseSettings):
     )
 
     comfyui_url: str = "http://127.0.0.1:8188"
+    # The desktop app sets this false until setup installs the engine (PyTorch and ComfyUI).
+    engine_installed: bool = True
     api_key: str = ""
     url_signing_secret: str = ""
     cors_origins: Annotated[list[str], NoDecode] = Field(

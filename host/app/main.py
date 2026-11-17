@@ -49,7 +49,7 @@ from app.net_settings import router as net_settings_router
 from app.engine import Engine
 from app.history import History
 from app.history import router as history_router
-from app.engine_server import idle_minutes
+from app.engine_server import ENGINE_NOT_INSTALLED, idle_minutes
 from app.engine_server import router as engine_server_router
 from app.errors import ApiError, api_error_handler
 from app.jobs import Job, JobQueue
@@ -298,6 +298,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         default_workflow_present = DEFAULT_MODEL in request.app.state.models
 
         try:
+            if not cfg.engine_installed:
+                raise ApiError("engine_down", ENGINE_NOT_INSTALLED)
             await comfy.health()
         except ApiError as exc:
             payload = HealthResponse(

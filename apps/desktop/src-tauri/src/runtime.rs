@@ -3,10 +3,12 @@
 //! The host's own code ships inside the app (bundle resources); only its dependencies come from PyPI.
 
 use std::fs;
-use std::io;
+use std::io::{self, BufRead, BufReader, Read};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex as StdMutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -59,6 +61,29 @@ pub enum Step {
 pub struct Progress {
     pub step: Step,
     pub done: bool,
+    /// While running: the tool's latest line and the bytes received, about every second.
+    /// When done: ALREADY if nothing needed installing.
+    pub detail: Option<String>,
+}
+
+const ALREADY: &str = "Already installed";
+const STOPPED_MSG: &str = "Stopped. Retry picks up where it left off.";
+
+/// The install command running now, so Stop and quitting the app can kill it.
+static INSTALL_CHILD: StdMutex<Option<Child>> = StdMutex::new(None);
+/// Set by Stop: the running command is killed and the next one doesn't start.
+static STOPPED: AtomicBool = AtomicBool::new(false);
+
+/// An install step's commands report through this.
+pub struct Live<'a> {
+    step: Step,
+    report: &'a dyn Fn(Progress),
+}
+
+impl Live<'_> {
+    fn send(&self, done: bool, detail: Option<String>) {
+        (self.report)(Progress { step: self.step, done, detail });
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -100,6 +125,7 @@ pub struct Runtime {
 #[tauri::command]
 pub async fn install_core(app: AppHandle, state: State<'_, Runtime>, on_progress: Channel<Progress>) -> Result<(), String> {
     let _guard = state.installing.lock().await;
+    STOPPED.store(false, Ordering::SeqCst);
     let paths = app_paths(&app)?;
     let host_dir = resource_dir(&app)?.join("host");
     tauri::async_runtime::spawn_blocking(move || {
@@ -115,6 +141,7 @@ pub async fn install_core(app: AppHandle, state: State<'_, Runtime>, on_progress
 #[tauri::command]
 pub async fn install_engine(app: AppHandle, state: State<'_, Runtime>, on_progress: Channel<Progress>) -> Result<(), String> {
     let _guard = state.installing.lock().await;
+    STOPPED.store(false, Ordering::SeqCst);
     let paths = app_paths(&app)?;
     tauri::async_runtime::spawn_blocking(move || {
         let index = torch_index_for(&scan::scan());
@@ -124,6 +151,24 @@ pub async fn install_engine(app: AppHandle, state: State<'_, Runtime>, on_progre
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// The install screen's Stop: kills the running step; the install command then fails with STOPPED_MSG.
+#[tauri::command]
+pub fn stop_install() {
+    kill_install();
+}
+
+/// Also called when the app quits, so a `uv pip install` doesn't carry on in the background.
+pub fn kill_install() {
+    STOPPED.store(true, Ordering::SeqCst);
+    if let Some(child) = install_child().as_mut() {
+        let _ = child.kill();
+    }
+}
+
+fn install_child() -> std::sync::MutexGuard<'static, Option<Child>> {
+    INSTALL_CHILD.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 #[tauri::command]
@@ -181,6 +226,8 @@ pub async fn ensure_host(app: &AppHandle) -> Result<HostInfo, String> {
     };
     let mut info = HostInfo { url: format!("http://127.0.0.1:{port}"), api_key, lan, comfy_port: None, comfy_folders: None };
     let mut spec = host_spec(&paths, &resource_dir(app)?, port, &info.api_key, lan);
+    // Without the engine, /health says to finish setup instead of failing to reach ComfyUI.
+    spec.env.push(("ENGINE_INSTALLED".into(), engine.to_string()));
     let mut waits = vec![(HOST, HOST_START_TIMEOUT, spec.log_file.clone())];
     if engine {
         // A ComfyUI that's up (or on its way) stays: only the host needs restarting.
@@ -292,28 +339,22 @@ fn resource_dir(app: &AppHandle) -> Result<PathBuf, String> {
     app.path().resource_dir().map_err(|e| e.to_string())
 }
 
-/// Runs every step in order, reporting each one.
+/// Runs every step in order, reporting each one. Finished steps are skipped or are uv's quick check.
 pub fn install(paths: &Paths, host_dir: &Path, report: impl Fn(Progress)) -> Result<(), String> {
     for step in [Step::Uv, Step::Python, Step::Venv, Step::Host] {
-        report(Progress { step, done: false });
-        match step {
-            Step::Uv => ensure_uv(paths)?,
-            Step::Python => run(uv(paths).args(["python", "install", PYTHON]))?,
+        let live = Live { step, report: &report };
+        live.send(false, None);
+        let already = match step {
+            Step::Uv => paths.uv().exists() || ensure_uv(paths, &live).map(|_| false)?,
+            Step::Python => nothing_installed(&run_live(uv(paths).args(["python", "install", PYTHON]), &live)?),
             Step::Venv => {
-                if !paths.venv_python().exists() {
-                    run(uv(paths).args(["venv", "--clear", "--python", PYTHON]).arg(paths.venv()))?;
-                }
+                paths.venv_python().exists()
+                    || run_live(uv(paths).args(["venv", "--clear", "--python", PYTHON]).arg(paths.venv()), &live).map(|_| false)?
             }
-            Step::Host => run(
-                uv(paths)
-                    .args(["pip", "install", "--python"])
-                    .arg(paths.venv_python())
-                    .arg("-r")
-                    .arg(host_dir.join("pyproject.toml")),
-            )?,
+            Step::Host => nothing_installed(&run_live(pip(paths).arg("-r").arg(host_dir.join("pyproject.toml")), &live)?),
             Step::Torch | Step::Comfyui => unreachable!("engine steps run in setup_engine"),
-        }
-        report(Progress { step, done: true });
+        };
+        live.send(true, already.then(|| ALREADY.into()));
     }
     Ok(())
 }
@@ -321,28 +362,40 @@ pub fn install(paths: &Paths, host_dir: &Path, report: impl Fn(Progress)) -> Res
 /// Torch, then ComfyUI's code and requirements (torch is already satisfied, so it stays as installed).
 /// `index` is the PyTorch wheel index for this machine; None means PyPI.
 pub fn setup_engine(paths: &Paths, index: Option<&str>, report: impl Fn(Progress)) -> Result<(), String> {
-    // shortcut: no byte progress for the GB-sized torch download; stream uv's output if the wait confuses people.
-    let pip = || {
-        let mut cmd = uv(paths);
-        cmd.args(["pip", "install", "--python"]).arg(paths.venv_python());
-        cmd
-    };
-    report(Progress { step: Step::Torch, done: false });
-    let mut torch = pip();
-    torch.args(["torch", "torchvision"]);
+    let (torch, comfy) = (Live { step: Step::Torch, report: &report }, Live { step: Step::Comfyui, report: &report });
+    torch.send(false, None);
+    let mut cmd = pip(paths);
+    cmd.args(["torch", "torchvision"]);
     if let Some(index) = index {
-        torch.args(["--index-url", index]);
+        cmd.args(["--index-url", index]);
     }
-    run(&mut torch)?;
-    report(Progress { step: Step::Torch, done: true });
+    let already = nothing_installed(&run_live(&mut cmd, &torch)?);
+    torch.send(true, already.then(|| ALREADY.into()));
 
-    report(Progress { step: Step::Comfyui, done: false });
-    ensure_comfyui(paths)?;
+    comfy.send(false, None);
     let code = comfyui_code(paths);
-    run(pip().arg("-r").arg(code.join("requirements.txt")))?;
+    let unpacked = code.join("main.py").exists();
+    ensure_comfyui(paths, &comfy)?;
+    // ComfyUI starts without its workflow templates (it logs an error) and they're a large download.
+    let excludes = code.join("glint-excludes.txt");
+    fs::write(&excludes, "comfyui-workflow-templates\n").map_err(|e| e.to_string())?;
+    let lines = run_live(pip(paths).arg("-r").arg(code.join("requirements.txt")).arg("--excludes").arg(&excludes), &comfy)?;
+    // An install stopped after this point only lacks the marker; the check above was then quick.
     fs::write(code.join(READY_MARKER), "").map_err(|e| e.to_string())?;
-    report(Progress { step: Step::Comfyui, done: true });
+    comfy.send(true, (unpacked && nothing_installed(&lines)).then(|| ALREADY.into()));
     Ok(())
+}
+
+/// `uv pip install` into our venv.
+fn pip(paths: &Paths) -> Command {
+    let mut cmd = uv(paths);
+    cmd.args(["pip", "install", "--python"]).arg(paths.venv_python());
+    cmd
+}
+
+/// uv found everything in place: it says "Installed …" only when it added something.
+fn nothing_installed(lines: &[String]) -> bool {
+    !lines.iter().any(|l| l.starts_with("Installed "))
 }
 
 fn torch_index_for(hw: &scan::HardwareProfile) -> Option<&'static str> {
@@ -382,13 +435,13 @@ fn engine_installed(paths: &Paths) -> bool {
     comfyui_code(paths).join(READY_MARKER).exists()
 }
 
-fn ensure_comfyui(paths: &Paths) -> Result<(), String> {
+fn ensure_comfyui(paths: &Paths, live: &Live) -> Result<(), String> {
     let code = comfyui_code(paths);
     if code.join("main.py").exists() {
         return Ok(()); // unpacked elsewhere and moved in whole, so main.py means complete
     }
     let url = format!("https://github.com/comfyanonymous/ComfyUI/archive/refs/tags/v{COMFYUI_VERSION}.tar.gz");
-    let tmp = fetch_and_unpack(paths, &url, COMFYUI_SHA, "ComfyUI")?;
+    let tmp = fetch_and_unpack(paths, &url, COMFYUI_SHA, "ComfyUI", live)?;
     let _ = fs::remove_dir_all(&code);
     fs::rename(tmp.join(format!("ComfyUI-{COMFYUI_VERSION}")), &code).map_err(|e| e.to_string())?;
     let _ = fs::remove_dir_all(&tmp);
@@ -479,15 +532,12 @@ fn uv_archive(os: &str, arch: &str) -> Option<(String, &'static str)> {
     Some((format!("uv-{triple}.{ext}"), sha))
 }
 
-fn ensure_uv(paths: &Paths) -> Result<(), String> {
+fn ensure_uv(paths: &Paths, live: &Live) -> Result<(), String> {
     let uv = paths.uv();
-    if uv.exists() {
-        return Ok(());
-    }
     let (name, sha) = uv_archive(std::env::consts::OS, std::env::consts::ARCH)
         .ok_or("There's no uv build for this system.")?;
     let url = format!("https://github.com/astral-sh/uv/releases/download/{UV_VERSION}/{name}");
-    let tmp = fetch_and_unpack(paths, &url, sha, "uv")?;
+    let tmp = fetch_and_unpack(paths, &url, sha, "uv", live)?;
     let found = find_file(&tmp, &exe("uv")).ok_or("The uv archive has no uv binary.")?;
     fs::create_dir_all(uv.parent().unwrap()).map_err(|e| e.to_string())?;
     fs::rename(&found, &uv).map_err(|e| e.to_string())?;
@@ -497,22 +547,28 @@ fn ensure_uv(paths: &Paths) -> Result<(), String> {
 
 /// Downloads `url` into a fresh runtime/download-<what> folder, checks its sha256 and unpacks it there.
 /// Returns that folder; the caller moves out what it needs and deletes it.
-fn fetch_and_unpack(paths: &Paths, url: &str, sha: &str, what: &str) -> Result<PathBuf, String> {
-    let archive = fetch(paths, url, sha, what)?;
+fn fetch_and_unpack(paths: &Paths, url: &str, sha: &str, what: &str, live: &Live) -> Result<PathBuf, String> {
+    let archive = fetch(paths, url, sha, what, Some(live))?;
     let tmp = archive.parent().unwrap().to_path_buf();
-    run(Command::new(system_tool("tar")).arg("-xf").arg(&archive).arg("-C").arg(&tmp))?;
+    run_live(Command::new(system_tool("tar")).arg("-xf").arg(&archive).arg("-C").arg(&tmp), live)?;
     Ok(tmp)
 }
 
 /// Downloads `url` into a fresh folder of its own (two downloads at once don't meet) and checks its sha256.
-pub(crate) fn fetch(paths: &Paths, url: &str, sha: &str, what: &str) -> Result<PathBuf, String> {
+/// With `live`, it's an install step's download: reported and stoppable.
+pub(crate) fn fetch(paths: &Paths, url: &str, sha: &str, what: &str, live: Option<&Live>) -> Result<PathBuf, String> {
     let tmp = paths.runtime().join(format!("download-{}", what.to_lowercase().replace(' ', "-")));
     let _ = fs::remove_dir_all(&tmp);
     fs::create_dir_all(&tmp).map_err(|e| e.to_string())?;
     let archive = tmp.join(url.rsplit('/').next().unwrap_or("archive"));
     // shortcut: system curl and tar (in Windows 10+, macOS and desktop Linux) instead of an HTTP
     // and archive crate; switch if the app ever needs an HTTP client of its own.
-    run(Command::new(system_tool("curl")).args(["-fsSL", "--retry", "3", "-o"]).arg(&archive).arg(url))?;
+    let mut curl = Command::new(system_tool("curl"));
+    curl.args(["-fsSL", "--retry", "3", "-o"]).arg(&archive).arg(url);
+    match live {
+        Some(live) => run_live(&mut curl, live).map(drop)?,
+        None => run(&mut curl)?,
+    }
     let got = sha256_file(&archive).map_err(|e| e.to_string())?;
     if got != sha {
         return Err(format!("The {what} download is corrupt (sha256 {got}, expected {sha}). Try again."));
@@ -545,23 +601,111 @@ pub(crate) fn system_tool(name: &str) -> PathBuf {
 
 /// Runs to completion; on failure the error carries the tool's last lines of stderr.
 pub(crate) fn run(cmd: &mut Command) -> Result<(), String> {
+    let program = program_name(cmd);
+    let out = cmd
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| format!("Couldn't run {program}: {e}"))?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    failed(&program, out.status, stderr.lines().map(str::to_string).collect())
+}
+
+/// Like `run`, for an install step: reports the tool's latest line and the bytes received about every
+/// second, and is the child Stop kills. Returns everything the tool printed.
+fn run_live(cmd: &mut Command, live: &Live) -> Result<Vec<String>, String> {
+    let program = program_name(cmd);
+    if STOPPED.load(Ordering::SeqCst) {
+        return Err(STOPPED_MSG.into());
+    }
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Couldn't run {program}: {e}"))?;
+    let (tx, rx) = mpsc::channel();
+    let pipes: [Option<Box<dyn Read + Send>>; 2] =
+        [child.stdout.take().map(|p| Box::new(p) as _), child.stderr.take().map(|p| Box::new(p) as _)];
+    for pipe in pipes.into_iter().flatten() {
+        let tx = tx.clone();
+        thread::spawn(move || {
+            // uv and curl redraw a line with \r; keep the newest text of each.
+            for chunk in BufReader::new(pipe).split(b'\n').map_while(Result::ok) {
+                let text = String::from_utf8_lossy(&chunk);
+                if let Some(line) = text.split('\r').map(str::trim_end).filter(|l| !l.trim().is_empty()).last() {
+                    if tx.send(line.to_string()).is_err() {
+                        break;
+                    }
+                }
+            }
+        });
+    }
+    drop(tx);
+    *install_child() = Some(child);
+    let mut nets = sysinfo::Networks::new_with_refreshed_list();
+    let start = received(&mut nets);
+    let (mut lines, mut told) = (Vec::<String>::new(), Instant::now());
+    let status = loop {
+        let fresh = rx.recv_timeout(Duration::from_millis(200)).map(|l| lines.push(l)).is_ok();
+        if let Some(status) = install_child().as_mut().and_then(|c| c.try_wait().ok().flatten()) {
+            break status;
+        }
+        if fresh || told.elapsed() >= Duration::from_secs(1) {
+            let line = lines.last().map(|l| l.trim());
+            live.send(false, Some(live_detail(line, received(&mut nets).saturating_sub(start))));
+            told = Instant::now();
+        }
+    };
+    *install_child() = None;
+    // The readers end with the pipes; a grandchild still holding one isn't waited for long.
+    while let Ok(line) = rx.recv_timeout(Duration::from_secs(1)) {
+        lines.push(line);
+    }
+    if STOPPED.load(Ordering::SeqCst) {
+        return Err(STOPPED_MSG.into());
+    }
+    failed(&program, status, lines.clone())?;
+    Ok(lines)
+}
+
+fn program_name(cmd: &mut Command) -> String {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
-    let program = Path::new(cmd.get_program()).file_name().unwrap_or_default().to_string_lossy().into_owned();
-    let out = cmd
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|e| format!("Couldn't run {program}: {e}"))?;
-    if out.status.success() {
+    Path::new(cmd.get_program()).file_name().unwrap_or_default().to_string_lossy().into_owned()
+}
+
+/// Ok on success; else the error with the tool's last 8 lines of output.
+fn failed(program: &str, status: ExitStatus, lines: Vec<String>) -> Result<(), String> {
+    if status.success() {
         return Ok(());
     }
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    let lines: Vec<&str> = stderr.lines().filter(|l| !l.trim().is_empty()).collect();
+    let lines: Vec<String> = lines.into_iter().filter(|l| !l.trim().is_empty()).collect();
     let tail = lines[lines.len().saturating_sub(8)..].join("\n");
-    Err(format!("{program} failed ({}):\n{tail}", out.status))
+    Err(format!("{program} failed ({status}):\n{tail}"))
+}
+
+/// Bytes received on every network interface but loopback, so far.
+// shortcut: counts the whole machine's traffic, not only ours; good enough to show a download moving.
+fn received(nets: &mut sysinfo::Networks) -> u64 {
+    nets.refresh(true);
+    nets.iter().filter(|(name, _)| !name.starts_with("lo")).map(|(_, n)| n.total_received()).sum()
+}
+
+fn live_detail(line: Option<&str>, bytes: u64) -> String {
+    let got = match bytes {
+        b if b >= 1_000_000_000 => format!("{:.1} GB received", b as f64 / 1e9),
+        b if b >= 1_000_000 => format!("{} MB received", b / 1_000_000),
+        _ => String::new(),
+    };
+    match (line, got.is_empty()) {
+        (Some(line), true) => line.to_string(),
+        (Some(line), false) => format!("{line} · {got}"),
+        (None, false) => got,
+        (None, true) => "Working…".into(),
+    }
 }
 
 pub(crate) fn sha256_file(path: &Path) -> io::Result<String> {
@@ -724,6 +868,38 @@ mod tests {
         assert_eq!(health(Starting, Stopped), Health::Starting);
         assert_eq!(health(Stopped, Stopped), Health::Stopped);
         assert_eq!(health(crashed(), Running), Health::Broken);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn install_commands_stream_lines_and_stop() {
+        let report = |_| {};
+        let live = Live { step: Step::Torch, report: &report };
+        let mut lines = run_live(Command::new("sh").args(["-c", "echo one; printf 'a\\rb\\n' >&2"]), &live).unwrap();
+        lines.sort(); // stdout and stderr are read on two threads, so either can come first
+        assert_eq!(lines, ["b", "one"]);
+        assert!(nothing_installed(&lines));
+        assert!(!nothing_installed(&["Installed 3 packages in 16ms".into()]));
+        assert!(run_live(Command::new("sh").args(["-c", "echo oops; exit 3"]), &live).unwrap_err().contains("oops"));
+
+        let stopper = thread::spawn(|| {
+            thread::sleep(Duration::from_millis(500));
+            kill_install();
+        });
+        let started = Instant::now();
+        assert_eq!(run_live(Command::new("sleep").arg("30"), &live).unwrap_err(), STOPPED_MSG);
+        assert!(started.elapsed() < Duration::from_secs(5));
+        stopper.join().unwrap();
+        assert_eq!(run_live(Command::new("true").arg(""), &live).unwrap_err(), STOPPED_MSG); // the next one doesn't start
+        STOPPED.store(false, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn live_detail_shows_the_line_and_bytes() {
+        assert_eq!(live_detail(None, 0), "Working…");
+        assert_eq!(live_detail(Some("Downloading torch (75.1MiB)"), 12_500_000), "Downloading torch (75.1MiB) · 12 MB received");
+        assert_eq!(live_detail(None, 2_340_000_000), "2.3 GB received");
+        assert_eq!(live_detail(Some("Resolved 3 packages"), 500), "Resolved 3 packages");
     }
 
     #[test]
