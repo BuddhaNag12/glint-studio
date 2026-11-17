@@ -13,7 +13,7 @@ from app.catalog import CatalogError, ResolvedParams, check_params, load_catalog
 from app.errors import ERROR_STATUS, ApiError, api_error_handler
 from app.schemas import GenerateRequest
 from app.styles import Style, compose, load_styles
-from app.workflow import load_workflow_bundle, prepare_workflow
+from app.workflow import load_workflow_bundle, prepare_workflow, use_model_files
 
 REPO = Path(__file__).resolve().parents[2]
 CATALOG = REPO / "catalog"
@@ -133,18 +133,19 @@ def test_catalog_rejects_model_files_outside_the_models_folder(tmp_path: Path) -
 
 
 def test_every_variant_has_the_files_its_workflow_loads(models) -> None:
-    # shortcut: workflows name their model files, so each variant must ship those exact names;
-    # a smaller variant (fp8, GGUF) needs the host to inject file names into the workflow first.
+    # The host points each loader at the variant's file (use_model_files); every file the workflow
+    # then loads must be one the variant downloads.
     for model in models.values():
         if not model.variants:
             continue
-        workflow = json.loads((CATALOG / "workflows" / f"{model.workflow}.json").read_text())
-        loaded = {
-            v for node in workflow.values() for v in node.get("inputs", {}).values()
-            if isinstance(v, str) and v.endswith((".safetensors", ".gguf", ".ckpt"))
-        }
-        assert loaded, model.id
         for variant in model.variants:
+            workflow = json.loads((CATALOG / "workflows" / f"{model.workflow}.json").read_text())
+            use_model_files(workflow, [f.dest for f in variant.files])
+            loaded = {
+                v for node in workflow.values() for v in node.get("inputs", {}).values()
+                if isinstance(v, str) and v.endswith((".safetensors", ".gguf", ".ckpt"))
+            }
+            assert loaded, model.id
             assert loaded <= {f.dest.split("/")[-1] for f in variant.files}, (model.id, variant.precision)
 
 

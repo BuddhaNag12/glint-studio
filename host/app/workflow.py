@@ -134,6 +134,26 @@ def _set_node_input(
     inputs[target.input_key] = value
 
 
+# The catalog folder each loader node reads, and the input that names the file.
+LOADERS = {
+    "UNETLoader": ("diffusion_models", "unet_name"),
+    "CLIPLoader": ("text_encoders", "clip_name"),
+    "VAELoader": ("vae", "vae_name"),
+    "CheckpointLoaderSimple": ("checkpoints", "ckpt_name"),
+}
+
+
+def use_model_files(workflow: dict[str, Any], dests: list[str]) -> None:
+    """Point each loader node at the file from its folder in `dests` (catalog "<folder>/<name>"),
+    so one workflow serves every variant of a model.
+    shortcut: one file per folder; a workflow with two loaders of a kind (dual CLIP) needs a mapping entry."""
+    names = dict(d.split("/", 1) for d in dests)
+    for node in workflow.values():
+        folder, key = LOADERS.get(node.get("class_type"), ("", ""))
+        if folder in names and key in node.get("inputs", {}):
+            node["inputs"][key] = names[folder]
+
+
 def prepare_workflow(
     workflow: dict[str, Any],
     mapping: WorkflowMapping,

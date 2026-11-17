@@ -34,6 +34,30 @@
           "dest": "vae/ae.safetensors"
         }
       ]
+    },
+    {
+      "precision": "int8",
+      "min_vram_gb": 7,
+      "files": [
+        {
+          "url": "https://huggingface.co/Comfy-Org/Z-Image-Turbo/resolve/main/split_files/diffusion_models/z_image_turbo_int8_convrot.safetensors",
+          "sha256": "be517ebd47c912a5626a588e1aeea43e6be4a43c0cdcd2b48a2a780d9f358635",
+          "bytes": 6201001296,
+          "dest": "diffusion_models/z_image_turbo_int8_convrot.safetensors"
+        },
+        {
+          "url": "https://huggingface.co/Comfy-Org/Z-Image-Turbo/resolve/main/split_files/text_encoders/qwen_3_4b_fp8_mixed.safetensors",
+          "sha256": "72450b19758172c5a7273cf7de729d1c17e7f434a104a00167624cba94f68f15",
+          "bytes": 5631994051,
+          "dest": "text_encoders/qwen_3_4b_fp8_mixed.safetensors"
+        },
+        {
+          "url": "https://huggingface.co/Comfy-Org/Z-Image-Turbo/resolve/main/split_files/vae/ae.safetensors",
+          "sha256": "afc8e28272cd15db3919bacdb6918ce9c1ed22e96cb12c4d5ed0fba823529e38",
+          "bytes": 335304388,
+          "dest": "vae/ae.safetensors"
+        }
+      ]
     }
   ],
   "defaults": { "shape": "square", "steps": 6, "cfg": 1.0 },

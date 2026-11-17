@@ -90,6 +90,12 @@ def test_shipped_catalog_runs_great_on_a_24gb_mac() -> None:
     assert chosen_variant(hw("mps", 14.4, 24, 500), zimage).precision == "bf16"
 
 
+def test_shipped_catalog_runs_great_on_8gb_gpus_and_16gb_macs() -> None:
+    zimage = load_catalog(CATALOG)["z-image-turbo"]
+    assert pick(hw("cuda", 8, 16, 500), zimage) == ("great", "int8")
+    assert pick(hw("mps", 9.6, 16, 500), zimage) == ("great", "int8")  # the scan budgets 60% of 16 GB
+
+
 # --- downloads ---
 
 BODY = b"glint test model" * 1000
