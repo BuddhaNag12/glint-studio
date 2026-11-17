@@ -15,8 +15,9 @@ def test_image_kind_and_args() -> None:
     assert smoke.image_kind(b"\xff\xd8\xff\xe0") == "jpeg"
     assert smoke.image_kind(b"RIFF\0\0\0\0WEBPVP8 ") == "webp"
     assert smoke.image_kind(b"<html>") is None
-    args = smoke.parse_args(["--api-key", "k", "--model", "a", "--model", "b", "--skip-legacy"])
-    assert args.model == ["a", "b"] and args.skip_legacy and args.timeout == 300
+    args = smoke.parse_args(["--api-key", "k", "--model", "a", "--model", "b", "--skip-legacy", "--skip-cancel"])
+    assert args.model == ["a", "b"] and args.skip_legacy and args.skip_cancel and args.timeout == 300
+    assert args.base_url == "http://127.0.0.1:7788"
     assert smoke.events_url("https://h:9/") == "wss://h:9/api/v1/events"
 
 
