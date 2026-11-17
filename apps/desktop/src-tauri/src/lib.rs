@@ -37,6 +37,7 @@ pub fn run() {
             scan::scan_hardware,
             runtime::install_core,
             runtime::install_engine,
+            runtime::stop_install,
             runtime::start_host,
             runtime::setup_done,
             dashboard::open_dashboard,
@@ -48,7 +49,10 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| match event {
-            tauri::RunEvent::Exit => app.state::<runtime::Runtime>().supervisor.stop_all(),
+            tauri::RunEvent::Exit => {
+                runtime::kill_install();
+                app.state::<runtime::Runtime>().supervisor.stop_all();
+            }
             // Opening the app again (Finder, Spotlight, Launchpad) brings up Settings.
             #[cfg(target_os = "macos")]
             tauri::RunEvent::Reopen { .. } => dashboard::show_window(app),
