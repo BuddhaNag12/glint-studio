@@ -46,6 +46,7 @@ class Job:
     task: asyncio.Task | None = None
     data: list[Any] | None = None  # the formatted images, built once on first read
     params: dict = field(default_factory=dict)  # size, steps, cfg and the user's negative: for history and per-step time
+    n: int = 1  # images asked for, so a key's daily cap can count the ones still waiting
 
     @property
     def elapsed_ms(self) -> int | None:
@@ -79,10 +80,10 @@ class JobQueue:
 
     def submit(
         self, run: Runner, *, model: str, prompt: str, response_format: str, local: bool, style: str | None = None,
-        key: str | None = None, params: dict | None = None,
+        key: str | None = None, params: dict | None = None, n: int = 1,
     ) -> Job:
         self._prune()
-        job = Job(uuid.uuid4().hex, model, prompt, response_format, local, style, key, params=params or {})
+        job = Job(uuid.uuid4().hex, model, prompt, response_format, local, style, key, params=params or {}, n=n)
         self.jobs[job.id] = job
         self._emit("queued", job)
         job.task = asyncio.create_task(self._drive(job, run))

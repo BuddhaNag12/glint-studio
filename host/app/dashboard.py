@@ -40,6 +40,7 @@ from app.stats import KEEP_DAYS, Stats, day_bounds
 
 COOKIE = "glint_session"
 LOGIN_TTL = 60
+SESSION_MAX_AGE = 7 * 24 * 3600  # a copied cookie stops working after a week
 
 
 def login_signature(api_key: str, exp: int) -> str:
@@ -68,9 +69,11 @@ class Sessions:
         issued = str(int(now))
         return f"{issued}.{self._sign(issued)}"
 
-    def valid(self, session: str | None) -> bool:
+    def valid(self, session: str | None, now: float | None = None) -> bool:
         issued, _, sig = (session or "").partition(".")
-        return bool(self.key and issued and sig) and hmac.compare_digest(sig, self._sign(issued))
+        if not (self.key and issued.isdigit() and sig) or not hmac.compare_digest(sig, self._sign(issued)):
+            return False
+        return 0 <= (time.time() if now is None else now) - int(issued) < SESSION_MAX_AGE
 
 
 def local_only(request: Request) -> None:
@@ -104,7 +107,7 @@ async def login(request: Request, exp: int = Query(...), sig: str = Query(...)):
     if session is None:
         return HTMLResponse(GONE, status_code=403)
     resp = RedirectResponse("/", status_code=303)
-    resp.set_cookie(COOKIE, session, httponly=True, samesite="strict", path="/")
+    resp.set_cookie(COOKIE, session, max_age=SESSION_MAX_AGE, httponly=True, samesite="strict", path="/")
     return resp
 
 

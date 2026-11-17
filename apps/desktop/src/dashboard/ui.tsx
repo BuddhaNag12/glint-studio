@@ -191,7 +191,8 @@ export function Modal({ title, onClose, children }: { title: string; onClose: (v
   }, []);
   return (
     <dialog ref={ref} className="modal" aria-labelledby={id} onClose={(e) => onClose(e.currentTarget.returnValue)}>
-      <form method="dialog">
+      {/* React bubbles submit up its own tree: a modal rendered inside another form must not submit it. */}
+      <form method="dialog" onSubmit={(e) => e.stopPropagation()}>
         <h2 id={id}>{title}</h2>
         {children}
       </form>

@@ -23,7 +23,7 @@ from app.auth import require_api_key, require_main_key
 from app.dashboard import local_only
 from app.errors import ApiError
 from app.local_models import model_installed
-from app.model_folders import model_roots
+from app.model_folders import _write, model_roots
 from app.schemas import ImagesRequest
 
 # Newest first; a client asking for one of these gets it back, anything else gets the newest.
@@ -184,12 +184,6 @@ def claude_config_path() -> Path:
 
 def _backup(path: Path) -> Path:
     return path.with_name(path.name + ".glint-backup")
-
-
-def _write(path: Path, text: str) -> None:
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(text, "utf-8")
-    os.replace(tmp, path)  # Claude Desktop never reads half a file
 
 
 def _read_config(path: Path) -> dict:
