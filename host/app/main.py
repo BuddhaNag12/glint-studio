@@ -388,17 +388,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         provider = request.app.state.providers.get(job.model.provider)
         if provider is None:
             raise ApiError("provider_down", f"No '{job.model.provider}' provider is set up.")
-        key = request.state.key
-        scope = "cloud" if job.model.cloud else "local"
-        if scope not in key.scopes:
-            where = "cloud models, which may spend credits" if scope == "cloud" else "models on this computer"
-            raise ApiError("forbidden", f"This key can't use {where}. Allow it on the API page.")
+        key = _check_key(request, cloud=job.model.cloud, n=job.params.n)
         jobs: JobQueue = request.app.state.jobs
-        if key.daily_cap is not None:
-            made, _ = request.app.state.stats.key_usage().get(key.id, (0, 0))
-            waiting = sum(j.key == key.id and j.status in ("queued", "running") for j in jobs.jobs.values())
-            if made + waiting >= key.daily_cap:
-                raise ApiError("daily_cap", f"This key's limit is {key.daily_cap} images a day. Try again later.")
         return jobs.submit(
             lambda on_progress, on_preview: provider.generate(job, on_progress, on_preview),
             model=job.model.id,
@@ -409,7 +400,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             key=key.id,
             params={"width": job.params.width, "height": job.params.height, "steps": job.params.steps,
                     "cfg": job.params.cfg, "negative": negative},
+            n=job.params.n,
         )
+
+    def _check_key(request: Request, *, cloud: bool, n: int):
+        """The key may use this kind of model, and `n` more images fit in its daily cap."""
+        key = request.state.key
+        if ("cloud" if cloud else "local") not in key.scopes:
+            where = "cloud models, which may spend credits" if cloud else "models on this computer"
+            raise ApiError("forbidden", f"This key can't use {where}. Allow it on the API page.")
+        if key.daily_cap is not None:
+            jobs: JobQueue = request.app.state.jobs
+            made, _ = request.app.state.stats.key_usage().get(key.id, (0, 0))
+            waiting = sum(j.n for j in jobs.jobs.values() if j.key == key.id and j.status in ("queued", "running"))
+            if made + waiting + n > key.daily_cap:
+                raise ApiError("daily_cap", f"This key's limit is {key.daily_cap} images a day. Try again later.")
+        return key
 
     def _plan_images(request: Request, body: ImagesRequest) -> tuple[ProviderRequest, Style | None]:
         """Check an images request against the catalog: the model, style and final params."""
@@ -573,12 +579,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             else:
                 # The user's own workflow from WORKFLOWS_DIR, run as-is with no catalog or style.
                 workflow_template, mapping = load_workflow_bundle(cfg.workflows_dir, body.workflow)
+                key = _check_key(request, cloud=False, n=1)
                 job = jobs.submit(
                     lambda on_progress, on_preview: comfy.run_workflow(workflow_template, mapping, body, on_progress, on_preview),
                     model=body.workflow,
                     prompt=body.prompt,
                     response_format="legacy",
                     local=True,
+                    key=key.id,
                 )
             result = await jobs.wait(job)
         except WorkflowNotFoundError as exc:

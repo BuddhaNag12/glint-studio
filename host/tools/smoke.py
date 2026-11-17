@@ -1,4 +1,6 @@
-"""End-to-end smoke check of a running host: python -m tools.smoke --api-key ... (from host/)."""
+"""End-to-end smoke check of a running host: python -m tools.smoke --api-key ... (from host/).
+
+Needs only httpx and websockets, so on a tester's machine the app's own venv Python can run this file directly."""
 
 from __future__ import annotations
 
@@ -30,11 +32,12 @@ def image_kind(data: bytes) -> str | None:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Smoke-test a running host end to end.")
-    p.add_argument("--base-url", default="http://127.0.0.1:8000")
+    p.add_argument("--base-url", default="http://127.0.0.1:7788")
     p.add_argument("--api-key", default=os.environ.get("API_KEY"))
     p.add_argument("--model", action="append", help="repeatable; default: the host default model")
     p.add_argument("--timeout", type=float, default=300.0, help="seconds per check")
     p.add_argument("--skip-legacy", action="store_true", help="skip POST /api/v1/generate")
+    p.add_argument("--skip-cancel", action="store_true", help="skip the cancel check (cloud providers finish too fast)")
     return p.parse_args(argv)
 
 
@@ -155,7 +158,8 @@ def main(argv: list[str] | None = None) -> int:
             label = model or "default model"
             results.append(run(key, f"images ({label})", check_images, client, model))
             results.append(run(key, f"jobs+events ({label})", check_jobs, client, ws_url, model, args.timeout))
-        results.append(run(key, "cancel", check_cancel, client, args.timeout))
+        if not args.skip_cancel:
+            results.append(run(key, "cancel", check_cancel, client, args.timeout))
         if not args.skip_legacy:
             results.append(run(key, "legacy generate", check_legacy, client))
         results.append(run(key, "auth", check_auth, client))

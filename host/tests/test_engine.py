@@ -61,6 +61,11 @@ def test_settings_round_trip_and_yaml_goes_with_the_last_folder(tmp_path: Path) 
     save_settings(engine_file, False, [])
     assert not (tmp_path / "extra_model_paths.yaml").exists()
     assert get_setting(engine_file, "other") == 1  # features' own keys survive a save
+    engine_file.write_text("{broken")
+    with pytest.raises(ValueError):
+        update_settings(engine_file, {"other": 2})
+    assert engine_file.read_text() == "{broken"  # the user's file is never replaced by the patch
+    assert not list(tmp_path.glob("*.tmp"))
 
 
 def test_normalize_takes_the_comfyui_folder_or_its_models_folder(tmp_path: Path) -> None:
