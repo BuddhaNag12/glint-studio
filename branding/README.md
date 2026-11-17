@@ -53,6 +53,14 @@ cd source
 ## In the app
 
 - `apps/desktop/src-tauri/icons/`: the app icons come from `npx tauri icon ../../branding/png/glint-icon-dark-1024.png`, except `icon.icns`, which comes from `glint-icon-dark-macos-1024.png` (Apple's grid). Delete the `android/`, `ios/` and `64x64.png` it adds.
-- `icon.icon` there is a copy of `glint.icon`, the layered Icon Composer document `kit.py` writes. On macOS 26 and later the bundler compiles it into `Assets.car`, so the Dock icon follows Default, Dark, Clear and Tinted; older macOS uses `icon.icns`. Building it needs Xcode 26.
+- `Assets.car` there is `glint.icon` (the layered Icon Composer document `kit.py` writes) compiled ahead of time. On macOS 26 and later the Dock icon then follows Default, Dark, Clear and Tinted; older macOS uses `icon.icns`. It is committed because Xcode's `actool` fails now and then with "Bad file descriptor", which broke `npm run app` when the bundler compiled `glint.icon` itself. After changing `glint.icon`, rebuild it from the repo root (needs Xcode 26) and copy it in:
+
+  ```sh
+  mkdir -p /tmp/glint-car && xcrun actool branding/glint.icon --compile /tmp/glint-car \
+    --output-format human-readable-text --output-partial-info-plist /tmp/glint-car/p.plist \
+    --app-icon glint --include-all-app-icons --target-device mac \
+    --minimum-deployment-target 26.0 --platform macosx </dev/null
+  cp /tmp/glint-car/Assets.car apps/desktop/src-tauri/icons/Assets.car
+  ```
 - `app-icon.svg`, `app-icon-32.svg` and `app-icon-16.svg` there are copies of `svg/glint-icon-dark{,-32,-16}.svg`: the in-app logo (`.mark` in `App.css`) and the favicons.
 - `tray-template.png` is `png/glint-menubar-template@2x.png`; `tray-template.svg` is `svg/glint-menubar-template.svg`.
