@@ -10,6 +10,8 @@ import json
 import os
 import platform
 import re
+import tempfile
+import threading
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -47,9 +49,22 @@ def get_setting(engine_file: Path | None, key: str, default=None):
     return _raw(engine_file).get(key, default)
 
 
+_settings_lock = threading.Lock()  # sync routes run on a thread pool; two saves must not lose a key
+
+
 def update_settings(engine_file: Path, patch: dict) -> None:
-    """Merge keys into engine.json, keeping every key this call doesn't name."""
-    _write(engine_file, json.dumps({**_raw(engine_file), **patch}))
+    """Merge keys into engine.json, keeping every key this call doesn't name. A file that won't
+    parse is left for the user to fix, never replaced by just this patch."""
+    with _settings_lock:
+        try:
+            current = json.loads(engine_file.read_text())
+        except FileNotFoundError:
+            current = {}
+        except ValueError as e:
+            raise ValueError(f"{engine_file} isn't valid JSON, so it wasn't changed: {e}") from e
+        if not isinstance(current, dict):
+            raise ValueError(f"{engine_file} isn't a JSON object, so it wasn't changed.")
+        _write(engine_file, json.dumps({**current, **patch}))
 
 
 def model_roots(models_dir: Path | None, engine_file: Path | None) -> list[Path]:
@@ -68,9 +83,14 @@ def save_settings(engine_file: Path, preload: bool, folders: list[str]) -> None:
 
 
 def _write(path: Path, text: str) -> None:
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    os.replace(tmp, path)  # the app never reads half a file
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name, suffix=".tmp")  # unique: two writers never share it
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(tmp, path)  # the app never reads half a file
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
 
 
 def _quote(path: str) -> str:

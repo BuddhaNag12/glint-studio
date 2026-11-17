@@ -11,6 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.jobs import Job
+from app.providers.base import ProviderResult
 from app.stats import DAY, KEEP_DAYS, Stats, day_bounds
 from tests.test_api import _setup_test_app
 
@@ -85,10 +86,14 @@ def test_record_switch_clear_and_retention(tmp_path: Path) -> None:
     stats.record(job(time.time(), key="phone"))
     assert stats.db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0] == 1  # kept, nothing added
     assert stats.key_usage()["phone"][0] == 2  # but the key's daily cap still counts
+    three = job(time.time(), key="phone")
+    three.result = ProviderResult(images=[None] * 3, seed=1, job_ref="r")
+    stats.record(three)
+    assert stats.key_usage()["phone"][0] == 5  # the cap counts images, not jobs
 
     stats.clear()
     assert stats.db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0] == 0
-    assert stats.key_usage()["phone"][0] == 2
+    assert stats.key_usage()["phone"][0] == 5
 
     stats.db.execute("INSERT INTO jobs (finished, model, status) VALUES (?, 'zit', 'done')", (old,))
     stats.db.commit()

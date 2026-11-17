@@ -63,10 +63,12 @@ class Stats:
             self.db.execute("ALTER TABLE jobs ADD COLUMN key TEXT")  # logs from before per-app keys
         # Key daily caps count from their own table, so turning usage off or clearing it can't lift a cap.
         if not self.db.execute("SELECT 1 FROM sqlite_master WHERE name = 'key_jobs'").fetchone():
-            self.db.execute("CREATE TABLE key_jobs (key TEXT, finished REAL)")
+            self.db.execute("CREATE TABLE key_jobs (key TEXT, finished REAL, images INTEGER NOT NULL DEFAULT 1)")
             self.db.execute(
-                "INSERT INTO key_jobs SELECT key, finished FROM jobs WHERE key IS NOT NULL AND status = 'done'"
+                "INSERT INTO key_jobs (key, finished) SELECT key, finished FROM jobs WHERE key IS NOT NULL AND status = 'done'"
             )
+        if "images" not in {row[1] for row in self.db.execute("PRAGMA table_info(key_jobs)")}:
+            self.db.execute("ALTER TABLE key_jobs ADD COLUMN images INTEGER NOT NULL DEFAULT 1")  # caps once counted jobs
         self._prune()
 
     def recording(self) -> bool:
@@ -83,7 +85,8 @@ class Stats:
         try:
             finished = job.finished or time.time()
             if job.key not in (None, "main") and job.status == "done":
-                self.db.execute("INSERT INTO key_jobs VALUES (?, ?)", (job.key, finished))
+                images = len(job.result.images) if job.result else 1
+                self.db.execute("INSERT INTO key_jobs VALUES (?, ?, ?)", (job.key, finished, images))
             if self.recording():
                 queue_ms = int(((job.started or finished) - job.created) * 1000)
                 err = job.api_error
@@ -105,7 +108,7 @@ class Stats:
         """Per key id: (images made in the last 24 hours, when it last made one)."""
         since = (time.time() if now is None else now) - DAY
         return {key: (recent, last) for key, recent, last in self.db.execute(
-            "SELECT key, SUM(finished >= ?), MAX(finished) FROM key_jobs GROUP BY key", (since,)
+            "SELECT key, SUM((finished >= ?) * images), MAX(finished) FROM key_jobs GROUP BY key", (since,)
         )}
 
     def summary(

@@ -147,16 +147,17 @@ pub async fn ensure_host(app: &AppHandle) -> Result<HostInfo, String> {
     let paths = app_paths(app)?;
     let engine = engine_installed(&paths);
     let lan = crate::network::wanted(&paths).lan;
-    let running = |name| supervisor.status(name) == ProcessStatus::Running;
+    let up = |name| up(&supervisor.status(name));
     if let Some(info) = host.as_ref() {
-        if running(HOST) && info.lan == lan && (!engine || running(COMFYUI)) {
+        if up(HOST) && info.lan == lan && (!engine || up(COMFYUI)) {
             return Ok(info.clone());
         }
     }
     // A LAN switch restarts the running host; free its port first so it keeps the same one.
     supervisor.stop(HOST);
     if host.is_none() {
-        kill_orphans(&paths.venv_python()); // first start: a crashed or rebuilt app may have left its host on our port
+        // First start: a crashed or rebuilt app may have left its host on our port, or its tunnel running.
+        kill_orphans(&[paths.venv_python(), paths.cloudflared()]);
     }
     if !paths.venv_python().exists() {
         return Err("The runtime isn't installed yet.".into());
@@ -183,7 +184,7 @@ pub async fn ensure_host(app: &AppHandle) -> Result<HostInfo, String> {
     let mut waits = vec![(HOST, HOST_START_TIMEOUT, spec.log_file.clone())];
     if engine {
         // A ComfyUI that's up (or on its way) stays: only the host needs restarting.
-        let comfy_up = matches!(supervisor.status(COMFYUI), ProcessStatus::Running | ProcessStatus::Starting);
+        let comfy_up = matches!(supervisor.status(COMFYUI), ProcessStatus::Running | ProcessStatus::Starting | ProcessStatus::Unhealthy);
         let reuse = host.as_ref().and_then(|i| i.comfy_port).filter(|_| comfy_up);
         let comfy_port = match reuse {
             Some(port) => port,
@@ -208,7 +209,13 @@ pub async fn ensure_host(app: &AppHandle) -> Result<HostInfo, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let _ = write_hardware(&paths); // without it the host recommends models for the CPU
         for (name, timeout, log) in waits {
-            wait_running(&supervisor, name, timeout).map_err(|e| format!("{e}\n{}", log_tail(&log, 15)))?;
+            if let Err(e) = wait_running(&supervisor, name, timeout) {
+                let e = format!("{e}\n{}", log_tail(&log, 15));
+                if name == HOST {
+                    return Err(e);
+                }
+                eprintln!("{e}"); // a broken ComfyUI still opens the dashboard, where its log and Restart are
+            }
         }
         Ok::<_, String>(())
     })
@@ -232,25 +239,36 @@ impl Runtime {
 
     /// The server's state for the menu-bar menu.
     pub fn health(&self) -> Health {
-        use ProcessStatus::*;
-        match (self.supervisor.status(HOST), self.supervisor.status(COMFYUI)) {
-            (Running, Running | Stopped | Starting) => Health::Running,
-            (Running, _) => Health::EngineStopped,
-            (Starting, _) => Health::Starting,
-            (Stopped, _) => Health::Stopped,
-            _ => Health::Broken,
-        }
+        health(self.supervisor.status(HOST), self.supervisor.status(COMFYUI))
     }
 
     /// Whether the host is up or on its way, so the menu offers Stop rather than Start.
     pub fn host_on(&self) -> bool {
-        matches!(self.supervisor.status(HOST), ProcessStatus::Running | ProcessStatus::Starting)
+        let status = self.supervisor.status(HOST);
+        up(&status) || status == ProcessStatus::Starting
     }
 
     /// Stops the host and ComfyUI. The address and key are kept, so a start brings back the same ones.
     pub fn stop_server(&self) {
         self.supervisor.stop(HOST);
         self.supervisor.stop(COMFYUI);
+    }
+}
+
+/// Up, counting one that just failed a health check: a busy ComfyUI or host may answer late, and
+/// restarting it would kill the job it's running.
+fn up(status: &ProcessStatus) -> bool {
+    matches!(status, ProcessStatus::Running | ProcessStatus::Unhealthy)
+}
+
+fn health(host: ProcessStatus, comfy: ProcessStatus) -> Health {
+    use ProcessStatus::*;
+    match (host, comfy) {
+        (h, Running | Unhealthy | Stopped | Starting) if up(&h) => Health::Running,
+        (h, _) if up(&h) => Health::EngineStopped,
+        (Starting, _) => Health::Starting,
+        (Stopped, _) => Health::Stopped,
+        _ => Health::Broken,
     }
 }
 
@@ -567,16 +585,17 @@ pub(crate) fn find_file(dir: &Path, name: &str) -> Option<PathBuf> {
 /// The host's usual port; another one only when something else holds it.
 const HOST_PORT: u16 = 7788;
 
-/// Kills host and ComfyUI processes left behind by an app that's gone: they run our venv's Python and
-/// their parent has exited. A second running app's processes still have a live parent, so they stay.
-fn kill_orphans(python: &Path) {
+/// Kills host, ComfyUI and tunnel processes left behind by an app that's gone: they run one of `exes`
+/// (our venv's Python, our cloudflared) and their parent has exited. A second running app's processes
+/// still have a live parent, so they stay.
+fn kill_orphans(exes: &[PathBuf]) {
     use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
     let mut sys = System::new();
     sys.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always));
     let alive = |pid: Pid| pid.as_u32() > 1 && sys.process(pid).is_some();
     for p in sys.processes().values() {
-        if p.cmd().first().is_some_and(|exe| Path::new(exe) == python) && !p.parent().is_some_and(alive) {
-            eprintln!("stopping a host left by an earlier run: pid {}", p.pid());
+        if p.cmd().first().is_some_and(|exe| exes.iter().any(|e| Path::new(exe) == e)) && !p.parent().is_some_and(alive) {
+            eprintln!("stopping a process left by an earlier run: pid {}", p.pid());
             if p.kill() {
                 p.wait(); // so its port is free before host_port looks
             }
@@ -687,6 +706,18 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn a_failed_health_check_is_still_up() {
+        use ProcessStatus::*;
+        let crashed = || Crashed { exit_code: Some(1), restarts: 5 };
+        assert_eq!(health(Unhealthy, Running), Health::Running); // busy, not broken
+        assert_eq!(health(Running, Unhealthy), Health::Running);
+        assert_eq!(health(Unhealthy, crashed()), Health::EngineStopped);
+        assert_eq!(health(Starting, Stopped), Health::Starting);
+        assert_eq!(health(Stopped, Stopped), Health::Stopped);
+        assert_eq!(health(crashed(), Running), Health::Broken);
     }
 
     #[test]

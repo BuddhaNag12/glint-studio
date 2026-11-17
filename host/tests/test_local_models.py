@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 
 from app.catalog import CatalogModel, Defaults, Limits, ModelFile, Variant, load_catalog
 from app.config import Settings
-from app.dashboard import Sessions, login_signature
+from app.dashboard import SESSION_MAX_AGE, Sessions, login_signature
 from app.errors import ApiError
 from app.keys import Keys
 from app.local_models import Downloads, chosen_variant, recommend
@@ -177,6 +177,7 @@ def test_login_links_are_signed_short_lived_and_single_use() -> None:
     assert Sessions("key").valid(session)  # a restarted host still knows it
     assert not Sessions("new-key").valid(session)  # a new key ends it
     assert Sessions("").login(exp, login_signature("", exp), now) is None
+    assert s.valid(session, now + SESSION_MAX_AGE - 1) and not s.valid(session, now + SESSION_MAX_AGE + 1)
 
 
 def test_login_signature_matches_the_desktop_app() -> None:
@@ -268,6 +269,8 @@ def test_extra_keys_scopes_and_daily_cap(tmp_path: Path) -> None:
         assert client.post("/v1/images/generations", json=body, headers=phone).status_code == 200
         res = client.post("/v1/images/generations", json=body, headers=phone)
         assert res.status_code == 429 and res.json()["error"]["code"] == "daily_cap"
+        res = client.post("/api/v1/generate", json={"prompt": "a fox", "workflow": "sample"}, headers=phone)
+        assert res.status_code == 429  # a user's own workflow counts too
         assert client.post("/v1/images/generations", json=body, headers=AUTH).status_code == 200  # no cap
         [listed] = client.get("/api/v1/keys", headers=AUTH).json()["keys"]
         assert listed["used_24h"] == 1 and listed["last_used"]
