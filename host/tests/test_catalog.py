@@ -179,3 +179,15 @@ def test_api_error_renders_code_and_message() -> None:
     assert len(ERROR_STATUS) == 13
     with pytest.raises(ValueError):
         ApiError("nope", "x")  # type: ignore[arg-type]
+
+
+def test_hf_fill_rewrites_only_size_and_hash_in_place():
+    from tools.hf_fill import fill, parse_url
+
+    url = "https://huggingface.co/Org/Repo/resolve/main/split_files/vae/a%20e.safetensors"
+    assert parse_url(url) == ("Org/Repo", "main", "split_files/vae/a e.safetensors")
+    text = f'{{"files": [\n  {{ "url": "{url}", "sha256": "", "bytes": 0, "dest": "vae/ae.safetensors" }}\n]}}'
+    new, changes = fill(text, lambda u: (335, "f" * 64))
+    assert new == text.replace('"sha256": ""', f'"sha256": "{"f" * 64}"').replace('"bytes": 0', '"bytes": 335')
+    assert len(changes) == 1
+    assert fill(new, lambda u: (335, "f" * 64)) == (new, [])
