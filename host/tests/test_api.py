@@ -198,6 +198,13 @@ def test_cors_preflight_allows_configured_origin_only(tmp_path: Path) -> None:
         assert allowed.status_code == 200
         assert allowed.headers.get("access-control-allow-origin") == "http://localhost:3000"
 
+        # The app's Settings window is another origin and saves settings with PUT.
+        put = client.options(
+            "/api/v1/settings/security",
+            headers={"Origin": "http://localhost:3000", "Access-Control-Request-Method": "PUT"},
+        )
+        assert put.status_code == 200
+
         disallowed = client.options(
             "/api/v1/generate",
             headers={
