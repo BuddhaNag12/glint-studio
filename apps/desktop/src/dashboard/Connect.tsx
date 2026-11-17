@@ -122,40 +122,42 @@ function Keys({ shares }: { shares: Share[] }) {
         </Modal>
       )}
       {keys.length > 0 && (
-        <table className="data">
-          <thead>
-            <tr>
-              <th scope="col">Name</th>
-              <th scope="col">Models</th>
-              <th scope="col" className="n">Daily limit</th>
-              <th scope="col" className="n">Last 24 h</th>
-              <th scope="col">Last used</th>
-              <th scope="col"><span className="sr-only">Actions</span></th>
-            </tr>
-          </thead>
-          <tbody>
-            {keys.map((k) => (
-              <tr key={k.id}>
-                <td>{k.name}</td>
-                <td>{k.scopes.includes("cloud") ? "Local and cloud" : "Local"}</td>
-                <td className="n">{k.daily_cap ?? "None"}</td>
-                <td className="n">{k.used_24h}</td>
-                <td>{when(k.last_used)}</td>
-                <td>
-                  <div className="actions">
-                  <button
-                    className="ghost small"
-                    onClick={() => (setMade(null), setDraft({ id: k.id, name: k.name, cloud: k.scopes.includes("cloud"), cap: k.daily_cap?.toString() ?? "" }))}
-                  >
-                    Edit
-                  </button>
-                  <button className="ghost small danger" onClick={() => revoke(k)}>Revoke</button>
-                  </div>
-                </td>
+        <div className="table-scroll">
+          <table className="data">
+            <thead>
+              <tr>
+                <th scope="col">Name</th>
+                <th scope="col">Models</th>
+                <th scope="col" className="n">Daily limit</th>
+                <th scope="col" className="n">Last 24 h</th>
+                <th scope="col">Last used</th>
+                <th scope="col"><span className="sr-only">Actions</span></th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {keys.map((k) => (
+                <tr key={k.id}>
+                  <td>{k.name}</td>
+                  <td>{k.scopes.includes("cloud") ? "Local and cloud" : "Local"}</td>
+                  <td className="n">{k.daily_cap ?? "None"}</td>
+                  <td className="n">{k.used_24h}</td>
+                  <td>{when(k.last_used)}</td>
+                  <td>
+                    <div className="actions">
+                    <button
+                      className="ghost small"
+                      onClick={() => (setMade(null), setDraft({ id: k.id, name: k.name, cloud: k.scopes.includes("cloud"), cap: k.daily_cap?.toString() ?? "" }))}
+                    >
+                      Edit
+                    </button>
+                    <button className="ghost small danger" onClick={() => revoke(k)}>Revoke</button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
       {made && (
         <div className="key-made" role="status">
@@ -252,7 +254,7 @@ export default function Connect({ conn }: { conn: Connection }) {
 
   return (
     <>
-      <PageHeader title="Connect" lead="Glint Studio speaks the OpenAI images API, so most apps only need the address and the key" />
+      <PageHeader title="API" lead="Glint Studio speaks the OpenAI images API, so most apps only need the address and the key" />
       {error && <Alert>{error}</Alert>}
 
       <section className="card" aria-labelledby="this-computer">

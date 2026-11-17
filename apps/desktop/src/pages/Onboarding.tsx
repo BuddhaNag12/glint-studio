@@ -27,9 +27,66 @@ const BACKEND_LABEL: Record<Backend, string> = {
 };
 const OS_LABEL: Record<string, string> = { macos: "macOS", windows: "Windows", linux: "Linux" };
 
-export default function Onboarding({ onChoose }: { onChoose: (engine: Engine) => void }) {
+/** The first step: what Glint Studio is and what setup will do. */
+export function Welcome({ onStart }: { onStart: () => void }) {
+  return (
+    <main className="page">
+      <header className="hero welcome">
+        <span className="mark big" aria-hidden="true" />
+        <h1>Welcome to Glint Studio</h1>
+        <p className="lead">
+          Make images with open models on this computer, or with a cloud provider you choose. Other apps can use it too, through one
+          local address.
+        </p>
+        <p className="cap">Open source · GPL-3.0 · macOS, Windows and Linux</p>
+      </header>
+
+      <ol className="next" aria-label="What setup does">
+        <li>
+          <Icon name="cpu" size={20} />
+          <span>
+            <strong>Check this computer</strong>
+            A quick scan shows what it can run.
+          </span>
+        </li>
+        <li>
+          <Icon name="download" size={20} />
+          <span>
+            <strong>Install once</strong>
+            Python, the host and, if you want it, the image engine. In a folder of their own, with no admin rights.
+          </span>
+        </li>
+        <li>
+          <Icon name="sparkles" size={20} />
+          <span>
+            <strong>Make images</strong>
+            Pick a model in the dashboard. Settings stay here, a click away in the menu bar.
+          </span>
+        </li>
+      </ol>
+
+      <footer className="page-foot">
+        <span />
+        <button className="primary" onClick={onStart} autoFocus>
+          Get started
+        </button>
+      </footer>
+    </main>
+  );
+}
+
+export default function Onboarding({
+  initial,
+  onBack,
+  onChoose,
+}: {
+  initial: Engine | null;
+  onBack: () => void;
+  onChoose: (engine: Engine) => void;
+}) {
   const [profile, setProfile] = useState<HardwareProfile | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [pick, setPick] = useState<Engine | null>(initial);
 
   async function scan() {
     setProfile(null);
@@ -46,9 +103,16 @@ export default function Onboarding({ onChoose }: { onChoose: (engine: Engine) =>
   }, []);
 
   const gpuReady = profile !== null && profile.backend !== "cpu" && profile.vram_budget_gb > 0;
+  useEffect(() => {
+    if (profile) setPick((p) => p ?? (gpuReady ? "local" : "cloud")); // preselect the recommendation
+  }, [profile]);
 
-  const choice = (engine: Engine, recommended: boolean, title: string, body: string) => (
-    <button className={recommended ? "choice recommended" : "choice"} onClick={() => onChoose(engine)}>
+  const choice = (engine: Engine, recommended: boolean, icon: "monitor" | "globe", title: string, body: string) => (
+    <button className="choice" aria-pressed={pick === engine} onClick={() => setPick(engine)}>
+      <span className="choice-head">
+        <Icon name={icon} size={20} />
+        <span className="radio" aria-hidden="true" />
+      </span>
       <strong>
         {title}
         {recommended && <span className="tag">Recommended</span>}
@@ -59,14 +123,27 @@ export default function Onboarding({ onChoose }: { onChoose: (engine: Engine) =>
 
   return (
     <main className="page">
-      <div className="page-intro">
-        <span className="mark large" aria-hidden="true" />
-        <h1>Welcome to Glint Studio</h1>
-        <p className="lead">First, a quick look at this computer to see what it can run.</p>
-      </div>
+      <header className="hero">
+        <h1>This computer</h1>
+        <p className="lead">A quick look at this computer shows what it can run. Then pick where your images are made.</p>
+      </header>
+
+      {profile && (
+        <section className="choices" aria-labelledby="how-title">
+          <h2 id="how-title">How do you want to make images?</h2>
+          {choice(
+            "local",
+            gpuReady,
+            "monitor",
+            "On this computer",
+            `Free and private. Installs the image engine (a few GB) and a model that fits.${gpuReady ? "" : " Without a supported GPU this is slow."}`,
+          )}
+          {choice("cloud", !gpuReady, "globe", "With a cloud provider", "Fast on any computer. Uses your own API key, billed by the provider. Small install.")}
+        </section>
+      )}
 
       <section className="card" aria-live="polite" aria-busy={!profile && !error} aria-labelledby="computer-title">
-        <h2 id="computer-title">This computer</h2>
+        <h2 id="computer-title">What it has</h2>
         {error ? (
           <>
             <Alert>The scan didn't work: {error}</Alert>
@@ -113,18 +190,14 @@ export default function Onboarding({ onChoose }: { onChoose: (engine: Engine) =>
         )}
       </section>
 
-      {profile && (
-        <section className="choices" aria-labelledby="how-title">
-          <h2 id="how-title">How do you want to make images?</h2>
-          {choice(
-            "local",
-            gpuReady,
-            "On this computer",
-            `Free and private. Installs the image engine (a few GB) and a model that fits.${gpuReady ? "" : " Without a supported GPU this is slow."}`,
-          )}
-          {choice("cloud", !gpuReady, "With a cloud provider", "Fast on any computer. Uses your own API key, billed by the provider. Small install.")}
-        </section>
-      )}
+      <footer className="page-foot">
+        <button className="ghost" onClick={onBack}>
+          Back
+        </button>
+        <button className="primary" disabled={!pick} onClick={() => pick && onChoose(pick)}>
+          Continue
+        </button>
+      </footer>
     </main>
   );
 }

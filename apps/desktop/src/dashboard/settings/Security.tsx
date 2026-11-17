@@ -46,11 +46,11 @@ export default function Security() {
           {s.lan_open_generation && (
             <Alert>
               Anyone on your network can make images here without a key.
-              {!s.lan_active && ' It starts working when "On your local network" is on, on the Connect page.'}
+              {!s.lan_active && ' It starts working when "On your local network" is on, on the API page.'}
             </Alert>
           )}
           <p className="help">
-            Keys for apps and phones, made on the Connect page, only make images. They can't open this dashboard or change
+            Keys for apps and phones, made on the API page, only make images. They can't open this dashboard or change
             settings; the dashboard opens only from the Glint Studio menu on this computer.
           </p>
         </>

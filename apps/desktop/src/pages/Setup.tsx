@@ -2,11 +2,13 @@ import { useEffect, useState } from "react";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import type { Engine } from "./Onboarding";
 import { Alert, Icon } from "../dashboard/ui";
+import { ProviderKeys } from "./Providers";
 
 // Mirrors Progress and HostInfo in src-tauri/src/runtime.rs; "start" is the start_host call.
 type StepId = "uv" | "python" | "venv" | "host" | "torch" | "comfyui" | "start";
 type Progress = { step: Exclude<StepId, "start">; done: boolean };
 export type HostInfo = { url: string; api_key: string };
+export type Installed = { host: HostInfo; models: number };
 type StepState = "pending" | "running" | "done" | "failed";
 
 const CORE: [StepId, string][] = [
@@ -35,12 +37,11 @@ export default function Setup({
 }: {
   engine: Engine;
   onBack: () => void;
-  onReady: (host: HostInfo) => void;
+  onReady: (done: Installed) => void;
 }) {
   const groups = groupsFor(engine);
   const [states, setStates] = useState(allPending);
   const [error, setError] = useState<string | null>(null);
-  const [ready, setReady] = useState<{ host: HostInfo; models: number } | null>(null);
   const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
@@ -78,7 +79,7 @@ export default function Setup({
           }
         }
         set("start", "done");
-        if (live) setReady({ host, models: models.length });
+        if (live) onReady({ host, models: models.length });
       } catch (e) {
         set(current, "failed");
         if (live) setError(String(e));
@@ -96,18 +97,41 @@ export default function Setup({
     return all.some((x) => x !== "pending") ? "running" : "pending";
   };
 
+  const rows = groups.flatMap(([, , r]) => r);
+  const finished = rows.filter(([id]) => states[id] === "done").length;
+
   return (
     <main className="page">
-      <div className="page-intro">
-        <span className="mark large" aria-hidden="true" />
-        <h1>Setting up</h1>
+      <header className="hero">
+        <div className="hero-title">
+          <h1>Setting up</h1>
+          {error ? (
+            <span className="state bad">
+              <Icon name="error" size={14} />
+              Stopped
+            </span>
+          ) : (
+            <span className="state now">
+              <Icon name="spinner" size={14} />
+              Installing
+            </span>
+          )}
+        </div>
         <p className="lead">
           This happens once and needs no admin rights.{" "}
           {engine === "local"
             ? "It needs about 2 GB of disk on a Mac, and more with an NVIDIA or AMD GPU (their PyTorch builds are larger)."
             : "It downloads about 50 MB."}
         </p>
-      </div>
+        <div className={error ? "progress bad" : "progress"}>
+          <div className="track" role="progressbar" aria-label="Setup" aria-valuemin={0} aria-valuemax={rows.length} aria-valuenow={finished} aria-valuetext={`${finished} of ${rows.length} done`}>
+            <span style={{ width: `${(finished / rows.length) * 100}%` }} />
+          </div>
+          <span className="cap num">
+            {finished} of {rows.length} done
+          </span>
+        </div>
+      </header>
 
       <ol className="steps" aria-live="polite">
         {groups.map(([title, sub, rows], n) => {
@@ -155,38 +179,67 @@ export default function Setup({
         </Alert>
       )}
 
-      {ready && (
-        <section className="card" aria-labelledby="ready-title">
-          <h2 id="ready-title" className="status">
-            <Icon name="check" />
-            Ready
-          </h2>
-          <p className="num">
-            The host is running at <code>{ready.host.url}</code> with {ready.models} model{ready.models === 1 ? "" : "s"} in the
-            catalog.
-          </p>
-          {engine === "local" && <p className="muted">Pick and download a model in the dashboard. Glint Studio stays in the menu bar.</p>}
+      {error && (
+        <footer className="page-foot">
+          <button className="ghost" onClick={onBack}>
+            Back
+          </button>
+          <button className="primary" onClick={() => setAttempt((n) => n + 1)}>
+            Retry
+          </button>
+        </footer>
+      )}
+    </main>
+  );
+}
+
+/** The last step: the host is up. A cloud setup adds the provider's key here first. */
+export function Ready({ done, engine, onSettings }: { done: Installed; engine: Engine; onSettings: () => void }) {
+  const [error, setError] = useState<string | null>(null);
+  const cloud = engine === "cloud";
+  return (
+    <main className="page">
+      <header className="hero">
+        <div className="hero-title">
+          <h1>{cloud ? "Add your API key" : "All set"}</h1>
+          <span className="state">
+            <Icon name="check" size={14} />
+            Running
+          </span>
+        </div>
+        <p className="lead">
+          {cloud
+            ? "Paste the key from your provider. It's kept in your system keychain and only sent to the provider."
+            : "Pick and download a model in the dashboard. Glint Studio stays in the menu bar when you close this window."}
+        </p>
+      </header>
+
+      {cloud ? (
+        <ProviderKeys host={done.host} />
+      ) : (
+        <section className="card" aria-labelledby="host-title">
+          <h2 id="host-title">Host</h2>
+          <dl className="facts">
+            <dt>Address</dt>
+            <dd>
+              <code>{done.host.url}</code>
+            </dd>
+            <dt>Models in the catalog</dt>
+            <dd className="num">{done.models}</dd>
+          </dl>
         </section>
       )}
 
-      <div className="page-foot">
-        <button className="ghost" onClick={onBack} disabled={!ready && !error}>
-          Back
+      {error && <Alert>{error}</Alert>}
+
+      <footer className="page-foot">
+        <button className="ghost" onClick={onSettings}>
+          Open settings
         </button>
-        <div className="actions">
-          {error && <button onClick={() => setAttempt((n) => n + 1)}>Retry</button>}
-          {ready &&
-            (engine === "local" ? (
-              <button className="primary" onClick={() => invoke("open_dashboard").catch((e) => setError(String(e)))}>
-                Open the dashboard
-              </button>
-            ) : (
-              <button className="primary" onClick={() => onReady(ready.host)}>
-                Add your API key
-              </button>
-            ))}
-        </div>
-      </div>
+        <button className="primary" onClick={() => invoke("open_dashboard").catch((e) => setError(String(e)))}>
+          Open the dashboard
+        </button>
+      </footer>
     </main>
   );
 }

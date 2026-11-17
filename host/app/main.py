@@ -392,7 +392,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         scope = "cloud" if job.model.cloud else "local"
         if scope not in key.scopes:
             where = "cloud models, which may spend credits" if scope == "cloud" else "models on this computer"
-            raise ApiError("forbidden", f"This key can't use {where}. Allow it on the Connect page.")
+            raise ApiError("forbidden", f"This key can't use {where}. Allow it on the API page.")
         jobs: JobQueue = request.app.state.jobs
         if key.daily_cap is not None:
             made, _ = request.app.state.stats.key_usage().get(key.id, (0, 0))

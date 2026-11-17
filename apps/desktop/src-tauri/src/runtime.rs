@@ -218,6 +218,12 @@ pub async fn ensure_host(app: &AppHandle) -> Result<HostInfo, String> {
     Ok(info)
 }
 
+/// Whether setup has run once: the window opens on Settings instead of the setup steps.
+#[tauri::command]
+pub fn setup_done(app: AppHandle) -> bool {
+    core_installed(&app)
+}
+
 /// Whether `install_core` has finished once, so the host can start without the setup window.
 pub fn core_installed(app: &AppHandle) -> bool {
     app_paths(app).is_ok_and(|p| p.venv_python().exists())

@@ -1,13 +1,13 @@
-//! The menu-bar menu: the server's address and Start/Stop, the model kept in memory, live system
-//! stats, and a shortcut to each dashboard page. A thread refreshes it from the host every 3 seconds.
+//! The menu-bar menu: the server's address, API, the model kept in memory, Start/Stop, and a
+//! shortcut to each dashboard page. A thread refreshes it from the host every 3 seconds.
 
 use std::thread;
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use tauri::menu::{AboutMetadata, CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
+use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::TrayIconBuilder;
-use tauri::{AppHandle, Manager, Wry};
+use tauri::{AppHandle, Emitter, Manager, Wry};
 
 use crate::dashboard::{open_page_or_setup, show_window};
 use crate::runtime::{self, Health, Runtime};
@@ -17,42 +17,24 @@ const REFRESH: Duration = Duration::from_secs(3);
 
 pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
     let item = |id: &str, text: &str| MenuItem::with_id(app, id, text, true, None::<&str>);
-    let note = || MenuItem::new(app, "", false, None::<&str>);
     let status = MenuItem::with_id(app, "status", "Server: starting…", false, None::<&str>)?;
     let server = item("server", "Stop Server")?;
     let models = Submenu::with_id(app, "models", "Models", false)?;
-    let system = [note()?, note()?, note()?];
-    let system_menu = Submenu::with_items(app, "System Stats", false, &[&system[0], &system[1], &system[2]])?;
-    let serving = [note()?, note()?, note()?, note()?];
-    let serving_menu =
-        Submenu::with_items(app, "Serving Stats", false, &[&serving[0], &serving[1], &serving[2], &serving[3]])?;
-    let about = AboutMetadata {
-        name: Some("Glint Studio".into()),
-        version: Some(app.package_info().version.to_string()),
-        comments: Some("Image models on your own computer, served as an API.".into()),
-        license: Some("GPL-3.0".into()),
-        website: Some("https://github.com/BuddhaNag12/glint-studio".into()),
-        icon: app.default_window_icon().cloned(),
-        ..Default::default()
-    };
     let separator = || PredefinedMenuItem::separator(app);
     let menu = Menu::with_items(
         app,
         &[
             &status,
             &separator()?,
-            &server,
+            &item("connect", "API")?,
             &models,
-            &separator()?,
-            &system_menu,
-            &serving_menu,
+            &server,
             &separator()?,
             &item("open", "Dashboard")?,
-            &item("generate", "Generate Images")?,
-            &item("connect", "Connect")?,
+            &item("generate", "Generate")?,
             &separator()?,
-            &MenuItem::with_id(app, "settings", "Settings…", true, Some("CmdOrCtrl+,"))?,
-            &PredefinedMenuItem::about(app, Some("About Glint Studio"), Some(about))?,
+            &item("about", "About")?,
+            &MenuItem::with_id(app, "settings", "Settings", true, Some("CmdOrCtrl+,"))?,
             &separator()?,
             &MenuItem::with_id(app, "quit", "Quit", true, Some("CmdOrCtrl+Q"))?,
         ],
@@ -71,10 +53,6 @@ pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
         text: String::new(),
         server,
         models,
-        system_menu,
-        system,
-        serving_menu,
-        serving,
         listed: None,
         checks: Vec::new(),
         unload: None,
@@ -189,6 +167,10 @@ fn on_click(app: &AppHandle, id: &str) {
         "browse" => open_page_or_setup(app, "models/discover"),
         "unload" => host_call(app, "/api/v1/engine/unload", None),
         "settings" => show_window(app),
+        "about" => {
+            show_window(app);
+            let _ = app.emit("pane", "about"); // Settings.tsx opens its About pane
+        }
         "quit" => app.exit(0),
         _ => {
             if let Some(model) = id.strip_prefix("model:") {
@@ -229,10 +211,6 @@ struct Tray {
     text: String,
     server: MenuItem<Wry>,
     models: Submenu<Wry>,
-    system_menu: Submenu<Wry>,
-    system: [MenuItem<Wry>; 3],
-    serving_menu: Submenu<Wry>,
-    serving: [MenuItem<Wry>; 4],
     /// The downloaded models the Models menu lists (id, name), so it's rebuilt only when they change.
     listed: Option<Vec<(String, String)>>,
     checks: Vec<CheckMenuItem<Wry>>,
@@ -247,7 +225,6 @@ impl Tray {
         let system = get("/api/v1/system");
         let up = system.is_some();
         let local = if up { get("/api/v1/local-models") } else { None };
-        let stats = if up { get("/api/v1/stats?days=1") } else { None };
 
         let health = state.health();
         let (text, tint) = status_line(health, host.as_ref().map(|h| h.url.as_str()));
@@ -264,18 +241,8 @@ impl Tray {
         let _ = tint; // only macOS colours it
         self.server.set_text(if state.host_on() { "Stop Server" } else { "Start Server" })?;
         self.models.set_enabled(local.is_some())?;
-        self.system_menu.set_enabled(up)?;
-        self.serving_menu.set_enabled(up)?;
-        if let Some(system) = &system {
-            for (item, line) in self.system.iter().zip(system_lines(system)) {
-                item.set_text(line)?;
-            }
-            for (item, line) in self.serving.iter().zip(serving_lines(system, stats.as_ref())) {
-                item.set_text(line)?;
-            }
-            if let Some(local) = &local {
-                self.show_models(app, downloaded(local), &system["engine"]["model"])?;
-            }
+        if let (Some(system), Some(local)) = (&system, &local) {
+            self.show_models(app, downloaded(local), &system["engine"]["model"])?;
         }
         Ok(())
     }
@@ -329,72 +296,9 @@ fn downloaded(local: &Value) -> Vec<(String, String)> {
         .collect()
 }
 
-/// The System Stats lines, from /api/v1/system.
-fn system_lines(s: &Value) -> [String; 3] {
-    let hw = &s["hardware"];
-    let chip = match (hw["gpus"][0]["name"].as_str(), hw["cpu"].as_str()) {
-        (Some(gpu), _) => format!("GPU: {gpu}"),
-        (None, Some(cpu)) => format!("CPU: {cpu}"),
-        (None, None) => "No supported GPU".into(),
-    };
-    let device = &s["engine"]["devices"][0];
-    let memory = if s["engine"]["up"].as_bool() == Some(true) && device.is_object() {
-        format!("GPU memory: {:.1} of {:.1} GB free", gib(&device["vram_free"]), gib(&device["vram_total"]))
-    } else {
-        "GPU memory: engine not running".into()
-    };
-    let disk = format!(
-        "Models: {:.1} GB, {:.0} GB free",
-        gib(&s["models_bytes"]),
-        hw["disk_free_gb"].as_f64().unwrap_or(0.0)
-    );
-    [chip, memory, disk]
-}
-
-/// The Serving Stats lines: the queue from /api/v1/system, today's jobs from /api/v1/stats?days=1.
-fn serving_lines(s: &Value, stats: Option<&Value>) -> [String; 4] {
-    let queue = match (s["queue"]["running"].as_u64().unwrap_or(0), s["queue"]["queued"].as_u64().unwrap_or(0)) {
-        (0, 0) => "Queue: empty".into(),
-        (running, queued) => format!("Queue: {running} running, {queued} waiting"),
-    };
-    let totals = stats.map(|t| &t["totals"]).unwrap_or(&Value::Null);
-    let count = |key: &str| totals[key].as_u64().unwrap_or(0);
-    // The most-used model's median, the time most of today's images took.
-    let median = match stats.and_then(|t| t["models"][0]["p50_ms"].as_f64()) {
-        Some(ms) => format!("Typical time: {:.1} s", ms / 1000.0),
-        None => "Typical time: no images yet".into(),
-    };
-    [queue, format!("Images today: {}", count("done")), format!("Failed today: {}", count("failed")), median]
-}
-
-/// Bytes as GiB, as the host counts free disk.
-fn gib(v: &Value) -> f64 {
-    v.as_f64().unwrap_or(0.0) / 1024f64.powi(3)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn stats_read_the_host_replies() {
-        let gib = 1024u64.pow(3);
-        let s = json!({
-            "engine": {"up": true, "devices": [{"name": "cuda:0", "vram_total": 24 * gib, "vram_free": 18 * gib}]},
-            "queue": {"running": 1, "queued": 2},
-            "hardware": {"gpus": [{"name": "NVIDIA RTX 4090"}], "cpu": "Ryzen", "disk_free_gb": 120.4},
-            "models_bytes": 21 * gib / 2,
-        });
-        assert_eq!(system_lines(&s), ["GPU: NVIDIA RTX 4090", "GPU memory: 18.0 of 24.0 GB free", "Models: 10.5 GB, 120 GB free"]);
-        let stats = json!({"totals": {"done": 12, "failed": 1}, "models": [{"model": "a", "p50_ms": 4230}]});
-        assert_eq!(
-            serving_lines(&s, Some(&stats)),
-            ["Queue: 1 running, 2 waiting", "Images today: 12", "Failed today: 1", "Typical time: 4.2 s"]
-        );
-        let down = json!({"engine": {"up": false, "devices": []}, "queue": {"running": 0, "queued": 0}, "hardware": {"cpu": "M3"}});
-        assert_eq!(system_lines(&down)[..2], ["CPU: M3", "GPU memory: engine not running"]);
-        assert_eq!(serving_lines(&down, None), ["Queue: empty", "Images today: 0", "Failed today: 0", "Typical time: no images yet"]);
-    }
 
     #[test]
     fn status_line_shows_the_port() {
