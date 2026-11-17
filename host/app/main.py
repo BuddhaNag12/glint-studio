@@ -194,6 +194,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     comfy_client,
                     resolved_settings.catalog_dir / "workflows",
                     resolved_settings.request_timeout_seconds,
+                    roots=lambda: model_roots(resolved_settings.models_dir, resolved_settings.engine_file),
                 ),
                 **remote_providers,
             }

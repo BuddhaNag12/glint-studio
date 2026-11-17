@@ -531,6 +531,28 @@ async def test_comfyui_provider_maps_failures_to_error_codes(error: Exception, c
     assert err.value.code == code
 
 
+async def test_comfyui_provider_loads_the_installed_variants_files(tmp_path: Path) -> None:
+    from app.catalog import load_catalog, resolve_params
+    from app.providers.base import ProviderRequest
+    from app.providers.comfyui import ComfyUIProvider
+    from app.styles import compose
+
+    catalog = Path(__file__).resolve().parents[2] / "catalog"
+    model = load_catalog(catalog)["z-image-turbo"]
+    int8 = next(v for v in model.variants if v.precision == "int8")
+    for f in int8.files:  # sparse files of the right size count as downloaded
+        (tmp_path / f.dest).parent.mkdir(parents=True, exist_ok=True)
+        with (tmp_path / f.dest).open("wb") as out:
+            out.truncate(f.bytes)
+    fake = FakeComfyClient()
+    provider = ComfyUIProvider(fake, catalog / "workflows", 5.0, roots=lambda: [tmp_path])  # type: ignore[arg-type]
+    await provider.generate(ProviderRequest(model, compose(model, "x"), resolve_params(model)))
+    names = {n["class_type"]: n["inputs"] for n in (fake.last_workflow or {}).values()}
+    assert names["UNETLoader"]["unet_name"] == "z_image_turbo_int8_convrot.safetensors"
+    assert names["CLIPLoader"]["clip_name"] == "qwen_3_4b_fp8_mixed.safetensors"
+    assert names["VAELoader"]["vae_name"] == "ae.safetensors"
+
+
 class _FakeWebSocket:
     def __init__(self, messages: list[Any]) -> None:
         self._messages = iter(messages)

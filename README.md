@@ -215,6 +215,10 @@ Run it against an existing ComfyUI: copy `host/.env.example` to `host/.env`, set
 (health, images, jobs and events, cancel, legacy generate, auth; one PASS/FAIL line each) with
 `uv run --no-sync python -m tools.smoke --api-key "$API_KEY"` from `host/`.
 
+To add a model file, give its entry in `catalog/models/` a Hugging Face `url`, a `dest`, `"sha256": ""` and
+`"bytes": 0`, then run `uv run --no-sync python -m tools.hf_fill ../catalog/models/*.json` from `host/`: it fills
+both from Hugging Face without downloading anything (set `HF_TOKEN` for gated repos).
+
 To add a remote image API, copy `host/providers.example.json` to `host/providers.json`, and set
 `PROVIDERS_FILE=providers.json` and the key it names (e.g. `OPENAI_API_KEY`) in `host/.env`.
 
