@@ -164,7 +164,7 @@ fn install_cloudflared(paths: &Paths) -> Result<(), String> {
         .find(|(os, arch, ..)| *os == std::env::consts::OS && *arch == std::env::consts::ARCH)
         .ok_or("There's no cloudflared build for this system.")?;
     let url = format!("https://github.com/cloudflare/cloudflared/releases/download/{CLOUDFLARED_VERSION}/{asset}");
-    let file = runtime::fetch(paths, &url, sha, "cloudflared")?;
+    let file = runtime::fetch(paths, &url, sha, "cloudflared", None)?;
     let dir = file.parent().unwrap().to_path_buf();
     let found = if *tgz {
         runtime::run(std::process::Command::new(runtime::system_tool("tar")).arg("-xzf").arg(&file).arg("-C").arg(&dir))?;

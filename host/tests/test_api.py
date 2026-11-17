@@ -146,6 +146,11 @@ def test_health_endpoint_reports_ok_and_degraded(tmp_path: Path) -> None:
         assert res_down.json()["comfyui_connected"] is False
         assert client.get("/livez").status_code == 200  # alive even with ComfyUI down
 
+        app.state.settings.engine_installed = False  # the desktop app's setup hasn't installed it
+        res_missing = client.get("/health")
+        assert res_missing.status_code == 503
+        assert res_missing.json()["detail"].startswith("Engine not installed")
+
 
 def test_generate_requires_valid_api_key_and_rejects_unconfigured_server(tmp_path: Path) -> None:
     app, fake_comfy, _ = _setup_test_app(tmp_path)

@@ -1,4 +1,4 @@
-"""Settings page: Downloads (source, mirror, proxies) and Security (keyless generation on the LAN).
+"""Settings page: Downloads (source, mirror, proxies), Security (keyless generation on the LAN) and Erase.
 
 Read and changed only from this computer, with the main key, like the other settings.
 """
@@ -6,6 +6,8 @@ Read and changed only from this computer, with the main key, like the other sett
 from __future__ import annotations
 
 import asyncio
+import os
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, StrictBool
@@ -53,3 +55,42 @@ async def security(request: Request) -> dict:
 async def set_security(body: Security, request: Request) -> dict:
     await asyncio.to_thread(update_settings, _engine_file(request), {"lan_open_generation": body.lan_open_generation})
     return await security(request)
+
+
+# --- Erase all data and quit ---
+# The app-data folder is engine.json's folder. The app watches for ERASE_REQUEST there, then stops this
+# host and ComfyUI, deletes the folder and its keychain entries, and quits.
+ERASE_REQUEST = "erase_requested"
+
+
+def _size(root: Path) -> int:
+    """Bytes under root. Links aren't followed: folders linked from another ComfyUI aren't ours to count."""
+    total = 0
+    for folder, _, files in os.walk(root):
+        for name in files:
+            try:
+                total += os.lstat(os.path.join(folder, name)).st_size
+            except OSError:
+                pass  # deleted while we walked
+    return total
+
+
+@router.get("/erase")
+async def erase_info(request: Request) -> dict:
+    """What Erase would free, for the confirm."""
+    path = _engine_file(request)
+    models = request.app.state.settings.models_dir
+    total, models_bytes = await asyncio.to_thread(lambda: (_size(path.parent), _size(models) if models else 0))
+    linked = get_setting(path, "folders", [])
+    return {
+        "folder": str(path.parent),
+        "total_bytes": total,
+        "models_bytes": models_bytes,
+        "linked_folders": len(linked) if isinstance(linked, list) else 0,
+    }
+
+
+@router.post("/erase", status_code=202)
+async def erase(request: Request) -> dict:
+    await asyncio.to_thread((_engine_file(request).parent / ERASE_REQUEST).touch)
+    return {"erasing": True}
