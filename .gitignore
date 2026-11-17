@@ -10,3 +10,5 @@ node_modules/
 dist/
 target/
 *.egg-info/
+graphify-out/
+docs/design
