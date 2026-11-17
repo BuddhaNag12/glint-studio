@@ -69,7 +69,8 @@ jobs:
           tagName: v__VERSION__
           releaseName: Glint Studio __VERSION__
           releaseDraft: true
-          prerelease: false
+          # The version can't say "alpha" (Windows MSI takes numbers only), so GitHub's pre-release flag does. Set false for 1.0.
+          prerelease: true
           releaseBody: |
             Download the installer for your computer below.
 
