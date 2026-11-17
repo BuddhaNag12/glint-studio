@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -10,9 +11,12 @@ from typing import TYPE_CHECKING, Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from app.errors import ApiError
+from app.model_folders import get_setting
 
 if TYPE_CHECKING:
     from app.styles import Style
+
+logger = logging.getLogger(__name__)
 
 ID_PATTERN = r"^[a-z0-9][a-z0-9_-]*$"
 Quality = Literal["fast", "standard", "best"]
@@ -36,6 +40,17 @@ class Params(_Strict):
 
 class Defaults(Params):
     shape: str
+    size: tuple[int, int] | None = None  # set from the user's model settings; beats shape
+
+
+class ModelSettings(_Strict):
+    """The user's own defaults for one model (Models → Settings), in engine.json "model_overrides"."""
+
+    width: int | None = None
+    height: int | None = None
+    steps: int | None = None
+    cfg: float | None = None
+    negative: str | None = Field(default=None, max_length=4000)
 
 
 class Limits(_Strict):
@@ -159,13 +174,16 @@ def resolve_params(
         # A style's shape only applies when this model has a size by that name.
         if shape is None and overrides and overrides.shape in model.limits.sizes:
             shape = overrides.shape
-        shape = shape or model.defaults.shape
-        if shape not in model.limits.sizes:
-            raise ApiError(
-                "bad_params",
-                f"Unknown shape '{shape}' for {model.name}. Use one of: {', '.join(model.limits.sizes)}.",
-            )
-        width, height = model.limits.sizes[shape]
+        if shape is None and model.defaults.size:
+            width, height = model.defaults.size
+        else:
+            shape = shape or model.defaults.shape
+            if shape not in model.limits.sizes:
+                raise ApiError(
+                    "bad_params",
+                    f"Unknown shape '{shape}' for {model.name}. Use one of: {', '.join(model.limits.sizes)}.",
+                )
+            width, height = model.limits.sizes[shape]
 
     resolved = ResolvedParams(width, height, pick("steps", steps), pick("cfg", cfg), n)
     check_params(model, resolved)
@@ -179,6 +197,45 @@ def check_params(model: CatalogModel, params: ResolvedParams) -> None:
     _check_steps_cfg(limits, params.steps, params.cfg)
     if not 1 <= params.n <= limits.n_max:
         raise ApiError("bad_params", f"n must be between 1 and {limits.n_max} for {model.name}.")
+
+
+def check_settings(model: CatalogModel, settings: ModelSettings) -> None:
+    """The same limits a request is held to."""
+    if (settings.width is None) != (settings.height is None):
+        raise ApiError("bad_params", "Set both width and height, or neither.")
+    if settings.width is not None and settings.height is not None:
+        _check_size(model.limits, settings.width, settings.height, label="size", named_ok=False)
+    _check_steps_cfg(model.limits, settings.steps, settings.cfg)
+    if settings.negative and not model.limits.supports_negative:
+        raise ApiError("bad_params", f"{model.name} doesn't use a negative prompt.")
+
+
+def read_user_settings(engine_file: Path | None, model: CatalogModel) -> ModelSettings | None:
+    saved = get_setting(engine_file, "model_overrides", {})
+    entry = saved.get(model.id) if isinstance(saved, dict) else None
+    if not entry:
+        return None
+    try:
+        settings = ModelSettings.model_validate(entry)
+        check_settings(model, settings)
+        return settings
+    except (ValidationError, ApiError) as exc:
+        # A hand-edited or outdated entry falls back to the catalog instead of failing every image.
+        logger.warning("Ignoring the saved settings for %s: %s", model.id, exc)
+        return None
+
+
+def with_user_settings(engine_file: Path | None, model: CatalogModel) -> CatalogModel:
+    """The model with the user's defaults in place of the catalog's. A request, style or quality
+    preset still wins, as they do over the catalog's defaults."""
+    settings = read_user_settings(engine_file, model)
+    if settings is None:
+        return model
+    update: dict = {k: v for k, v in (("steps", settings.steps), ("cfg", settings.cfg)) if v is not None}
+    if settings.width is not None and settings.height is not None:
+        update["size"] = (settings.width, settings.height)
+    negative = model.negative if settings.negative is None else settings.negative
+    return model.model_copy(update={"defaults": model.defaults.model_copy(update=update), "negative": negative})
 
 
 def _check_size(limits: Limits, width: int, height: int, *, label: str, named_ok: bool) -> None:

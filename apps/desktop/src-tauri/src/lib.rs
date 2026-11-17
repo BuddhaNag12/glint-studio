@@ -5,6 +5,7 @@ mod runtime;
 mod scan;
 mod secrets;
 mod supervisor;
+mod tray;
 
 use tauri::Manager;
 
@@ -14,7 +15,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(runtime::Runtime::default())
         .setup(|app| {
-            dashboard::create_tray(app.handle())?;
+            tray::create_tray(app.handle())?;
             network::spawn(app.handle().clone());
             // Installed: live in the menu bar and open the dashboard. First run: the setup window.
             if runtime::core_installed(app.handle()) {

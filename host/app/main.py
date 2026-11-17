@@ -37,17 +37,25 @@ from app.auth import (
     ws_api_key,
     ws_protocol_key,
 )
-from app.catalog import ID_PATTERN, CatalogModel, load_catalog, resolve_params
+from app.bench import router as bench_router
+from app.catalog import ID_PATTERN, CatalogModel, load_catalog, resolve_params, with_user_settings
 from app.comfy_client import ComfyClient, ComfyImageOutput, infer_mime_and_ext
 from app.config import Settings
 from app.dashboard import Sessions
 from app.dashboard import router as dashboard_router
+from app.model_settings import router as model_settings_router
+from app.mcp import router as mcp_router
+from app.net_settings import router as net_settings_router
 from app.engine import Engine
+from app.history import History
+from app.history import router as history_router
+from app.engine_server import idle_minutes
+from app.engine_server import router as engine_server_router
 from app.errors import ApiError, api_error_handler
 from app.jobs import Job, JobQueue
 from app.keys import Keys
 from app.local_models import Downloads
-from app.model_folders import model_roots, read_settings
+from app.model_folders import get_setting, model_roots, read_settings
 from app.naming import extract_image_title, safe_header_value, title_to_filename_slug
 from app.providers.base import ProviderRequest
 from app.providers.comfyui import ComfyUIProvider
@@ -189,7 +197,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 ),
                 **remote_providers,
             }
-            app.state.stats = Stats(resolved_settings.stats_db)
+            app.state.stats = Stats(resolved_settings.stats_db, resolved_settings.engine_file)
+            stats_db = resolved_settings.stats_db
+            app.state.history = History(stats_db.parent / "history" if stats_db else None)
             engine_file = resolved_settings.engine_file
             app.state.engine = Engine(
                 app.state.providers["comfyui"],
@@ -197,10 +207,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 roots=lambda: model_roots(resolved_settings.models_dir, engine_file),
                 preload=lambda: read_settings(engine_file)["preload"],
                 default_model=DEFAULT_MODEL,
+                idle_minutes=lambda model_id: idle_minutes(engine_file, model_id),
+                busy=lambda: any(j.status in ("queued", "running") for j in app.state.jobs.jobs.values()),
             )
 
             def on_finish(job: Job) -> None:
                 app.state.stats.record(job)
+                if get_setting(engine_file, "record_usage", True) is not False:  # the same privacy switch as usage
+                    app.state.history.record(job)
                 app.state.engine.finished(job)
 
             app.state.jobs = JobQueue(
@@ -214,7 +228,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             app.state.sessions = Sessions(resolved_settings.api_key.strip())
             # Downloads get their own client: no overall timeout on a 20 GB file.
             async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0)) as download_client:
-                app.state.downloads = Downloads(download_client, resolved_settings.models_dir or Path("models"))
+                app.state.downloads = Downloads(
+                    download_client, resolved_settings.models_dir or Path("models"), engine_file=resolved_settings.engine_file
+                )
                 watcher = asyncio.create_task(app.state.engine.watch())
                 try:
                     yield
@@ -222,6 +238,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     watcher.cancel()
                     await app.state.engine.close()
                     await app.state.downloads.cancel()
+                    if getattr(app.state, "bench", None):
+                        app.state.bench.cancel()
                     await app.state.jobs.shutdown()
                     app.state.stats.db.close()
 
@@ -245,6 +263,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.add_exception_handler(RequestValidationError, validation_error_handler)
     app.include_router(dashboard_router)
+    app.include_router(model_settings_router)
+    app.include_router(engine_server_router)
+    app.include_router(bench_router)
+    app.include_router(mcp_router)
+    app.include_router(history_router)
+    app.include_router(net_settings_router)
 
     app.add_middleware(
         CORSMiddleware,
@@ -358,7 +382,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"ok": True}
 
     def _submit(
-        request: Request, job: ProviderRequest, style: Style | None, user_prompt: str, response_format: str
+        request: Request, job: ProviderRequest, style: Style | None, user_prompt: str, response_format: str,
+        negative: str | None = None,
     ) -> Job:
         provider = request.app.state.providers.get(job.model.provider)
         if provider is None:
@@ -382,6 +407,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             local=job.model.provider == "comfyui",  # remote APIs don't share the local GPU
             style=style.id if style else None,
             key=key.id,
+            params={"width": job.params.width, "height": job.params.height, "steps": job.params.steps,
+                    "cfg": job.params.cfg, "negative": negative},
         )
 
     def _plan_images(request: Request, body: ImagesRequest) -> tuple[ProviderRequest, Style | None]:
@@ -392,6 +419,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         model = models.get(body.model or DEFAULT_MODEL)
         if model is None:
             raise ApiError("bad_params", f"Unknown model '{body.model}'. Use one of: {', '.join(models)}.")
+        model = with_user_settings(request.app.state.settings.engine_file, model)
         style = None
         if body.style:
             style = styles.get(body.style)
@@ -413,6 +441,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         prompt = compose(model, body.prompt, style=style, negative=body.negative_prompt)
         return ProviderRequest(model, prompt, params, body.seed), style
+
+    # The MCP tools (app.mcp) queue through the same checks as the OpenAI endpoint.
+    app.state.submit_images = lambda request, body: _submit(
+        request, *_plan_images(request, body), body.prompt, body.response_format, body.negative_prompt
+    )
 
     def _base(request: Request) -> str:
         """The address the client used (127.0.0.1, a LAN address, or the tunnel's https name), so
@@ -443,7 +476,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def images_generations(body: ImagesRequest, request: Request) -> ImagesResponse:
         """OpenAI-compatible image generation over every catalog and provider model."""
         jobs: JobQueue = request.app.state.jobs
-        job = _submit(request, *_plan_images(request, body), body.prompt, body.response_format)
+        job = _submit(request, *_plan_images(request, body), body.prompt, body.response_format, body.negative_prompt)
         result = await jobs.wait(job)
         data = _image_data(request.app.state.settings, _base(request), job)
         return ImagesResponse(created=int(time.time()), data=data, model=job.model, seed=result.seed)
@@ -452,7 +485,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def create_job(body: ImagesRequest, request: Request) -> dict:
         """Queue a generation and answer at once; follow it with GET /api/v1/jobs/{id} or the events."""
         jobs: JobQueue = request.app.state.jobs
-        job = _submit(request, *_plan_images(request, body), body.prompt, body.response_format)
+        job = _submit(request, *_plan_images(request, body), body.prompt, body.response_format, body.negative_prompt)
         return {"id": job.id, "status": job.status, "queue_position": jobs.queue_position(job)}
 
     def _own_job(request: Request, job_id: str) -> Job:
@@ -528,7 +561,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         try:
             if body.workflow == "default":
                 # The default catalog model through the default style.
-                model: CatalogModel = request.app.state.models[DEFAULT_MODEL]
+                model: CatalogModel = with_user_settings(cfg.engine_file, request.app.state.models[DEFAULT_MODEL])
                 style: Style | None = request.app.state.styles.get(DEFAULT_STYLE)
                 params = resolve_params(
                     model, style=style, width=body.width, height=body.height, steps=body.steps, cfg=body.cfg

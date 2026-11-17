@@ -45,6 +45,7 @@ class Job:
     done: asyncio.Event = field(default_factory=asyncio.Event)
     task: asyncio.Task | None = None
     data: list[Any] | None = None  # the formatted images, built once on first read
+    params: dict = field(default_factory=dict)  # size, steps, cfg and the user's negative: for history and per-step time
 
     @property
     def elapsed_ms(self) -> int | None:
@@ -78,10 +79,10 @@ class JobQueue:
 
     def submit(
         self, run: Runner, *, model: str, prompt: str, response_format: str, local: bool, style: str | None = None,
-        key: str | None = None,
+        key: str | None = None, params: dict | None = None,
     ) -> Job:
         self._prune()
-        job = Job(uuid.uuid4().hex, model, prompt, response_format, local, style, key)
+        job = Job(uuid.uuid4().hex, model, prompt, response_format, local, style, key, params=params or {})
         self.jobs[job.id] = job
         self._emit("queued", job)
         job.task = asyncio.create_task(self._drive(job, run))
@@ -128,6 +129,7 @@ class JobQueue:
             "progress": round(job.progress, 3),
             "created": int(job.created),
             "elapsed_ms": job.elapsed_ms,
+            "steps": job.params.get("steps"),
             "error": {"code": err.code, "message": err.message} if err else None,
         }
 

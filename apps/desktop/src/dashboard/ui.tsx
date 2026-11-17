@@ -41,6 +41,9 @@ const ICONS = {
   camera: '<path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/>',
   grid: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18"/><path d="M3 15h18"/><path d="M9 3v18"/><path d="M15 3v18"/>',
   droplet: '<path d="M12 22a7 7 0 0 0 7-7c0-2-1-3.9-3-5.5s-3.5-4-4-6.5c-.5 2.5-2 4.9-4 6.5C6 11.1 5 13 5 15a7 7 0 0 0 7 7z"/>',
+  settings:
+    '<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>',
+  gauge: '<path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/>',
   palette: '<circle cx="13.5" cy="6.5" r="1"/><circle cx="17.5" cy="10.5" r="1"/><circle cx="8.5" cy="7.5" r="1"/><circle cx="6.5" cy="12.5" r="1"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z"/>',
 };
 export type IconName = keyof typeof ICONS;
@@ -222,4 +225,63 @@ export function useConfirm() {
     </Modal>
   );
   return { dialog, ask };
+}
+
+/** A Settings page card. badge: "live" applies at once, "restart" needs an engine restart. */
+export function SettingsSection({
+  id,
+  title,
+  badge,
+  onReset,
+  children,
+}: {
+  id: string;
+  title: string;
+  badge?: "live" | "restart";
+  onReset?: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <section id={id} className="card set-section" aria-labelledby={`${id}-title`}>
+      <div className="set-head">
+        <h2 id={`${id}-title`}>{title}</h2>
+        {badge && <span className={`set-badge ${badge}`}>{badge === "live" ? "Live" : "Restart needed"}</span>}
+        {onReset && (
+          <button type="button" className="ghost small set-reset" onClick={onReset}>
+            Reset to default
+          </button>
+        )}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+/** One setting: label and hint on the left, the control on the right. Pass `id` when the control is a single
+ * input with that id, so the label clicks through to it; otherwise the control is grouped under the label. */
+export function SettingRow({ label, hint, id, children }: { label: string; hint?: ReactNode; id?: string; children: ReactNode }) {
+  const own = useId();
+  const labelId = `${own}-label`;
+  const hintId = hint ? `${own}-hint` : undefined;
+  return (
+    <div className="set-row">
+      <div className="set-text">
+        {id ? (
+          <label id={labelId} htmlFor={id}>
+            {label}
+          </label>
+        ) : (
+          <span id={labelId}>{label}</span>
+        )}
+        {hint && (
+          <p id={hintId} className="help">
+            {hint}
+          </p>
+        )}
+      </div>
+      <div className="set-control" role={id ? undefined : "group"} aria-labelledby={id ? undefined : labelId} aria-describedby={hintId}>
+        {children}
+      </div>
+    </div>
+  );
 }

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import ipaddress
 import time
 from collections.abc import Mapping
 
@@ -11,6 +12,7 @@ from fastapi import Depends, Header, HTTPException, Request, status
 
 from app.errors import ApiError
 from app.keys import Key
+from app.model_folders import get_setting
 
 
 def extract_api_token(authorization: str | None, x_api_key: str | None) -> str | None:
@@ -42,6 +44,54 @@ def ws_api_key(app, headers: Mapping[str, str], query_key: str | None = None) ->
     return app.state.keys.find(token) if app.state.settings.is_api_key_configured else None
 
 
+# "Allow image generation without a key from your local network" (engine.json lan_open_generation):
+# such requests act as this key, which makes images with local models only, and only on these routes.
+LAN_GUEST = Key(id="lan", name="Local network, no key", scopes=["local"])
+LAN_OPEN_ROUTES = {
+    ("POST", "/v1/images/generations"),
+    ("POST", "/api/v1/jobs"),
+    ("GET", "/api/v1/jobs/{job_id}"),
+    ("DELETE", "/api/v1/jobs/{job_id}"),
+    ("GET", "/api/v1/models"),
+    ("GET", "/api/v1/styles"),
+}
+LAN_NETWORKS = [ipaddress.ip_network(n) for n in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16", "fc00::/7", "fe80::/10")]
+# Any of these means a proxy passed the request on. The tunnel's cloudflared runs on 127.0.0.1 and
+# uvicorn swaps in the X-Forwarded-For address, so a forwarded request never counts as the LAN.
+PROXY_HEADERS = ("x-forwarded-for", "forwarded", "x-real-ip", "cf-connecting-ip", "cf-ray", "true-client-ip", "x-forwarded-host")
+
+
+def direct_lan_request(request: Request) -> bool:
+    """From a private LAN address, straight to this host, under an address-like Host name."""
+    if any(h in request.headers for h in PROXY_HEADERS):
+        return False
+    try:
+        ip = ipaddress.ip_address(request.client.host if request.client else "")
+    except ValueError:
+        return False
+    ip = getattr(ip, "ipv4_mapped", None) or ip
+    if not any(ip in net for net in LAN_NETWORKS):
+        return False
+    # A site renamed to this address (DNS rebinding) sends its own name; a LAN client sends the IP or .local name.
+    host = request.url.hostname or ""
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        return host.endswith(".local")
+
+
+def lan_open(request: Request) -> bool:
+    cfg = request.app.state.settings
+    route = request.scope.get("route")
+    return (
+        cfg.serve_on_network
+        and (request.method, getattr(route, "path", None)) in LAN_OPEN_ROUTES
+        and direct_lan_request(request)
+        and get_setting(cfg.engine_file, "lan_open_generation", False) is True
+    )
+
+
 def verify_api_key(
     request: Request,
     authorization: str | None = Header(default=None),
@@ -56,6 +106,9 @@ def verify_api_key(
         )
 
     token = extract_api_token(authorization, x_api_key)
+    if not token and lan_open(request):
+        request.state.key = LAN_GUEST
+        return
     if not token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

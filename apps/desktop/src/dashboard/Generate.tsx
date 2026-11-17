@@ -1,6 +1,7 @@
 import { CSSProperties, FormEvent, KeyboardEvent, useEffect, useRef, useState } from "react";
 import { api, JobEvent, Model, onJobEvents, Quality, secs, Style } from "./api";
 import { Alert, Icon, iconOr, useConfirm } from "./ui";
+import History, { HistoryItem } from "./History";
 import StyleEditor, { BLANK, copyOf, Listed } from "./Styles";
 
 // Each built-in style's tile, made with the model itself (src/dashboard/styles/<id>.jpg).
@@ -33,6 +34,7 @@ type JobView = {
   queue_position: number;
   progress: number;
   elapsed_ms: number | null;
+  steps?: number | null; // the steps it ran, for time per step
   error: { code: string; message: string } | null;
   seed?: number | null;
   data?: { b64_json?: string }[];
@@ -53,6 +55,20 @@ type Turn = Omit<JobView, "data"> & {
 // The page scrolls, with the composer stuck to the bottom: the newest turn is at the very end.
 const toEnd = (behavior: ScrollBehavior) => requestAnimationFrame(() => document.scrollingElement?.scrollTo({ top: 1e9, behavior }));
 const finished = (r: { status: string }) => ["done", "failed", "cancelled"].includes(r.status);
+const WIDE = "(min-width: 1200px)"; // room for the history beside the chat; narrower, it opens as a sheet
+
+// Mirrors Profile in host/app/history.py: "" and null mean the default.
+type Profile = {
+  name: string;
+  model: string;
+  style: string;
+  shape: string;
+  quality: Quality | "";
+  steps: number | null;
+  cfg: number | null;
+  seed: number | null;
+  negative: string;
+};
 
 // shortcut: the chat lives in this browser's IndexedDB with no cap (a 1024² PNG is ~1.5 MB); add paging or a
 // limit if people keep hundreds of images here.
@@ -87,6 +103,8 @@ export default function Generate({ phone }: { phone?: boolean }) {
   const [editing, setEditing] = useState<{ style: Style; fresh: boolean } | null>(null);
   const [full, setFull] = useState<Turn | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [wide, setWide] = useState(() => matchMedia(WIDE).matches);
+  const [sheet, setSheet] = useState(false); // the history, on narrow screens
   const live = useRef(turns);
   live.current = turns;
   const kept = useRef(new Set<string>());
@@ -105,6 +123,12 @@ export default function Generate({ phone }: { phone?: boolean }) {
     return () => (document.removeEventListener("keydown", close), document.removeEventListener("pointerdown", close));
   }, [panel]);
   const confirm = useConfirm();
+  useEffect(() => {
+    const m = matchMedia(WIDE);
+    const on = () => setWide(m.matches);
+    m.addEventListener("change", on);
+    return () => m.removeEventListener("change", on);
+  }, []);
 
   const loadStyles = () =>
     api<{ styles: Listed[] }>("/api/v1/styles").then(
@@ -243,6 +267,52 @@ export default function Generate({ phone }: { phone?: boolean }) {
     setShape(t.shape);
     box.current?.focus();
   };
+
+  // A past image from the host's history, as a turn, so the chat's own actions work on it.
+  const fromHistory = (h: HistoryItem, image?: string): Turn => {
+    const m = models.find((x) => x.id === h.model);
+    const sized = Object.entries(m?.limits.sizes ?? {}).find(([, [w, ht]]) => w === h.width && ht === h.height);
+    return {
+      id: h.id, status: "done", queue_position: 0, progress: 1, elapsed_ms: h.elapsed_ms, steps: h.steps, error: null, seed: h.seed,
+      body: { prompt: h.prompt, model: h.model, style: h.style ?? undefined, steps: h.steps ?? undefined, cfg: h.cfg ?? undefined, negative_prompt: h.negative ?? undefined },
+      modelName: m?.name ?? h.model, styleName: styles.find((s) => s.id === h.style)?.name ?? h.style ?? "", shape: sized?.[0] ?? "",
+      w: h.width ?? 1, h: h.height ?? 1, created: h.created * 1000, image,
+    };
+  };
+  const reuse = (h: HistoryItem) => {
+    const t = fromHistory(h);
+    edit(t);
+    setSteps(t.body.steps?.toString() ?? "");
+    setCfg(t.body.cfg?.toString() ?? "");
+    setNegative(t.body.negative_prompt ?? "");
+    setSeed(h.seed?.toString() ?? "");
+    setSheet(false);
+  };
+  const made = turns.filter((t) => t.status === "done").length; // refreshes the history as images finish
+  const history = (
+    <History
+      refresh={made}
+      names={(h) => { const t = fromHistory(h); return { model: t.modelName, style: t.styleName }; }}
+      onOpen={(h, image) => setFull(fromHistory(h, image))}
+      onUse={reuse}
+      onAgain={(h) => (setSheet(false), again(fromHistory(h)))}
+    />
+  );
+
+  const num = (v: string) => (v === "" ? null : Number(v));
+  const current = { model: modelId, style: styleId, shape, quality, steps: num(steps), cfg: num(cfg), seed: num(seed), negative };
+  const apply = (p: Profile) => {
+    const m = models.find((x) => x.id === p.model) ?? model;
+    if (m && m.id !== modelId) pickModel(m.id);
+    setStyleId(p.style);
+    setShape(m?.limits.sizes[p.shape] ? p.shape : "");
+    setQuality(p.quality && m?.quality[p.quality] ? p.quality : "");
+    setSteps(p.steps?.toString() ?? "");
+    setCfg(p.cfg?.toString() ?? "");
+    setSeed(p.seed?.toString() ?? "");
+    setNegative(p.negative);
+    if (p.model && m?.id !== p.model) setError(`${p.model} isn't available, so the profile was applied to ${m?.name}.`);
+  };
   const cancel = (id: string) => api(`/api/v1/jobs/${id}`, { method: "DELETE" }).catch((e) => setError(e.message));
   const clear = () =>
     confirm
@@ -255,179 +325,197 @@ export default function Generate({ phone }: { phone?: boolean }) {
       });
 
   return (
-    <div className={phone ? "chat phone-chat" : "chat"}>
-      <h1 className="sr-only">Generate</h1>
-      {confirm.dialog}
-      {turns.length > 0 && (
-        <div className="chat-top">
-          <button type="button" className="ghost small" onClick={clear}>
-            <Icon name="newchat" size={16} />
-            New chat
-          </button>
-        </div>
+    <div className={wide ? "gen wide" : "gen"}>
+      {wide && (
+        <aside className="history-side" aria-label="Past images">
+          <h2 className="history-title">History</h2>
+          {history}
+        </aside>
       )}
-
-      <div className="chat-log" aria-live="polite">
-        {turns.length === 0 ? (
-          <div className="hello">
-            <p className="hello-title">What should we make?</p>
-            <p className="muted">Describe an image. Each message makes a new one, on this computer.</p>
-            <div className="examples">
-              {EXAMPLES.map((x) => (
-                <button key={x} type="button" className="example" onClick={() => (setPrompt(x), box.current?.focus())}>
-                  {x}
-                </button>
-              ))}
-            </div>
+      <div className={phone ? "chat phone-chat" : "chat"}>
+        <h1 className="sr-only">Generate</h1>
+        {confirm.dialog}
+        {(turns.length > 0 || !wide) && (
+          <div className="chat-top">
+            {!wide && (
+              <button type="button" className="ghost small" aria-haspopup="dialog" onClick={() => setSheet(true)}>
+                <Icon name="layers" size={16} />
+                History
+              </button>
+            )}
+            {turns.length > 0 && (
+              <button type="button" className="ghost small" onClick={clear}>
+                <Icon name="newchat" size={16} />
+                New chat
+              </button>
+            )}
           </div>
-        ) : (
-          turns.map((t) => <TurnView key={t.id} t={t} onCancel={cancel} onAgain={again} onEdit={edit} onFull={setFull} />)
         )}
-      </div>
 
-      <form className="dock" onSubmit={submit}>
-        {error && <Alert>{error}</Alert>}
-        <div className="composer" ref={composer}>
-          <div className={panel === "style" ? "drawer open" : "drawer"} inert={panel !== "style"}>
-            <div>
-              <StyleTiles
-                styles={usable}
-                value={styleId}
-                onChange={(id) => (setStyleId(id), setPanel(""), phone || box.current?.focus())}
-                onEdit={(s) => setEditing({ style: s, fresh: false })}
-                onNew={() => setEditing({ style: copyOf(BLANK, "New style", styles), fresh: true })}
-              />
+        <div className="chat-log" aria-live="polite">
+          {turns.length === 0 ? (
+            <div className="hello">
+              <p className="hello-title">What should we make?</p>
+              <p className="muted">Describe an image. Each message makes a new one, on this computer.</p>
+              <div className="examples">
+                {EXAMPLES.map((x) => (
+                  <button key={x} type="button" className="example" onClick={() => (setPrompt(x), box.current?.focus())}>
+                    {x}
+                  </button>
+                ))}
+              </div>
             </div>
-          </div>
-          <div className={panel === "more" ? "drawer open" : "drawer"} inert={panel !== "more"}>
-            <div>
-              {model && (
-                <div className="more-panel form">
-                  <div className="two">
-                    {models.length > 1 && (
+          ) : (
+            turns.map((t) => <TurnView key={t.id} t={t} onCancel={cancel} onAgain={again} onEdit={edit} onFull={setFull} />)
+          )}
+        </div>
+
+        <form className="dock" onSubmit={submit}>
+          {error && <Alert>{error}</Alert>}
+          <div className="composer" ref={composer}>
+            <div className={panel === "style" ? "drawer open" : "drawer"} inert={panel !== "style"}>
+              <div>
+                <StyleTiles
+                  styles={usable}
+                  value={styleId}
+                  onChange={(id) => (setStyleId(id), setPanel(""), phone || box.current?.focus())}
+                  onEdit={(s) => setEditing({ style: s, fresh: false })}
+                  onNew={() => setEditing({ style: copyOf(BLANK, "New style", styles), fresh: true })}
+                />
+              </div>
+            </div>
+            <div className={panel === "more" ? "drawer open" : "drawer"} inert={panel !== "more"}>
+              <div>
+                {model && (
+                  <div className="more-panel form">
+                    {!phone && <Profiles current={current} onApply={apply} />}
+                    <div className="two">
+                      {models.length > 1 && (
+                        <label>
+                          Model
+                          <select value={modelId} onChange={(e) => pickModel(e.target.value)}>
+                            {models.map((m) => (
+                              <option key={m.id} value={m.id}>
+                                {m.name}
+                                {m.cloud ? " (cloud, may use credits)" : ""}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      )}
+                      {qualities.length > 0 && (
+                        <label>
+                          Quality
+                          <select value={quality} onChange={(e) => setQuality(e.target.value as Quality | "")}>
+                            <option value="">Default</option>
+                            {qualities.map((q) => (
+                              <option key={q} value={q}>
+                                {QUALITY[q]}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      )}
+                      {model.limits.supports_seed && (
+                        <label>
+                          Variation number
+                          <input type="number" min={0} value={seed} placeholder="Random" onChange={(e) => setSeed(e.target.value)} />
+                        </label>
+                      )}
+                      {model.limits.steps && (
+                        <label>
+                          Steps ({minSteps}–{maxSteps})
+                          <input
+                            type="number"
+                            min={minSteps}
+                            max={maxSteps}
+                            value={steps}
+                            placeholder={`Auto (${preset?.steps ?? model.defaults.steps ?? "model's"})`}
+                            onChange={(e) => setSteps(e.target.value)}
+                          />
+                        </label>
+                      )}
+                      {model.limits.cfg && (
+                        <label>
+                          CFG ({minCfg}–{maxCfg})
+                          <input
+                            type="number"
+                            min={minCfg}
+                            max={maxCfg}
+                            step={0.1}
+                            value={cfg}
+                            placeholder={`Auto (${preset?.cfg ?? model.defaults.cfg ?? "model's"})`}
+                            onChange={(e) => setCfg(e.target.value)}
+                          />
+                        </label>
+                      )}
+                    </div>
+                    {model.limits.supports_negative && (
                       <label>
-                        Model
-                        <select value={modelId} onChange={(e) => pickModel(e.target.value)}>
-                          {models.map((m) => (
-                            <option key={m.id} value={m.id}>
-                              {m.name}
-                              {m.cloud ? " (cloud, may use credits)" : ""}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                    )}
-                    {qualities.length > 0 && (
-                      <label>
-                        Quality
-                        <select value={quality} onChange={(e) => setQuality(e.target.value as Quality | "")}>
-                          <option value="">Default</option>
-                          {qualities.map((q) => (
-                            <option key={q} value={q}>
-                              {QUALITY[q]}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                    )}
-                    {model.limits.supports_seed && (
-                      <label>
-                        Variation number
-                        <input type="number" min={0} value={seed} placeholder="Random" onChange={(e) => setSeed(e.target.value)} />
-                      </label>
-                    )}
-                    {model.limits.steps && (
-                      <label>
-                        Steps ({minSteps}–{maxSteps})
-                        <input
-                          type="number"
-                          min={minSteps}
-                          max={maxSteps}
-                          value={steps}
-                          placeholder={`Auto (${preset?.steps ?? model.defaults.steps ?? "model's"})`}
-                          onChange={(e) => setSteps(e.target.value)}
-                        />
-                      </label>
-                    )}
-                    {model.limits.cfg && (
-                      <label>
-                        CFG ({minCfg}–{maxCfg})
-                        <input
-                          type="number"
-                          min={minCfg}
-                          max={maxCfg}
-                          step={0.1}
-                          value={cfg}
-                          placeholder={`Auto (${preset?.cfg ?? model.defaults.cfg ?? "model's"})`}
-                          onChange={(e) => setCfg(e.target.value)}
-                        />
+                        Negative prompt
+                        <textarea value={negative} onChange={(e) => setNegative(e.target.value)} rows={2} maxLength={4000} />
+                        <span className="help">Added to the model's and the style's, never replacing them</span>
                       </label>
                     )}
                   </div>
-                  {model.limits.supports_negative && (
-                    <label>
-                      Negative prompt
-                      <textarea value={negative} onChange={(e) => setNegative(e.target.value)} rows={2} maxLength={4000} />
-                      <span className="help">Added to the model's and the style's, never replacing them</span>
-                    </label>
-                  )}
-                </div>
+                )}
+              </div>
+            </div>
+            <textarea
+              ref={box}
+              className="prompt"
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              onKeyDown={onKey}
+              rows={1}
+              maxLength={4000}
+              aria-label="Describe the image"
+              placeholder={style ? `Describe the image · ${style.name}` : "Describe the image"}
+            />
+            <div className="composer-row">
+              <button type="button" className={panel === "style" ? "pill on" : "pill"} aria-expanded={panel === "style"} aria-label={`Style: ${style?.name ?? "None"}`} onClick={() => setPanel(panel === "style" ? "" : "style")}>
+                {style && thumbOf(style) ? <img className="pill-art" src={thumbOf(style)} alt="" /> : <Icon name={style ? iconOr(style.icon) : "palette"} size={16} />}
+                <span className="pill-name">{style?.name ?? "Style"}</span>
+                <Icon name="chevron" size={14} className="chev" />
+              </button>
+              {model && (
+                <label className="pill">
+                  <Icon name="square" size={16} />
+                  <span className="sr-only">Shape</span>
+                  <select value={shape} onChange={(e) => setShape(e.target.value)}>
+                    <option value="">{style?.overrides.shape ? `Style's (${style.overrides.shape})` : "Default shape"}</option>
+                    {Object.entries(model.limits.sizes).map(([name, [w, h]]) => (
+                      <option key={name} value={name}>
+                        {name[0].toUpperCase() + name.slice(1)} · {w}×{h}
+                      </option>
+                    ))}
+                  </select>
+                </label>
               )}
+              <button type="button" className={panel === "more" ? "pill on" : "pill"} aria-expanded={panel === "more"} aria-label="More settings" onClick={() => setPanel(panel === "more" ? "" : "more")}>
+                <Icon name="sliders" size={16} />
+                <span className="pill-name">More</span>
+              </button>
+              <button type="submit" className="send" aria-label="Generate" disabled={!model || !prompt.trim()}>
+                <Icon name="up" size={20} />
+              </button>
             </div>
           </div>
-          <textarea
-            ref={box}
-            className="prompt"
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
-            onKeyDown={onKey}
-            rows={1}
-            maxLength={4000}
-            aria-label="Describe the image"
-            placeholder={style ? `Describe the image · ${style.name}` : "Describe the image"}
-          />
-          <div className="composer-row">
-            <button type="button" className={panel === "style" ? "pill on" : "pill"} aria-expanded={panel === "style"} aria-label={`Style: ${style?.name ?? "None"}`} onClick={() => setPanel(panel === "style" ? "" : "style")}>
-              {style && thumbOf(style) ? <img className="pill-art" src={thumbOf(style)} alt="" /> : <Icon name={style ? iconOr(style.icon) : "palette"} size={16} />}
-              <span className="pill-name">{style?.name ?? "Style"}</span>
-              <Icon name="chevron" size={14} className="chev" />
-            </button>
-            {model && (
-              <label className="pill">
-                <Icon name="square" size={16} />
-                <span className="sr-only">Shape</span>
-                <select value={shape} onChange={(e) => setShape(e.target.value)}>
-                  <option value="">{style?.overrides.shape ? `Style's (${style.overrides.shape})` : "Default shape"}</option>
-                  {Object.entries(model.limits.sizes).map(([name, [w, h]]) => (
-                    <option key={name} value={name}>
-                      {name[0].toUpperCase() + name.slice(1)} · {w}×{h}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            )}
-            <button type="button" className={panel === "more" ? "pill on" : "pill"} aria-expanded={panel === "more"} aria-label="More settings" onClick={() => setPanel(panel === "more" ? "" : "more")}>
-              <Icon name="sliders" size={16} />
-              <span className="pill-name">More</span>
-            </button>
-            <button type="submit" className="send" aria-label="Generate" disabled={!model || !prompt.trim()}>
-              <Icon name="up" size={20} />
-            </button>
-          </div>
-        </div>
-      </form>
+        </form>
 
-      {editing && (
-        <StyleEditor
-          start={editing.style}
-          fresh={editing.fresh}
-          styles={styles}
-          reload={loadStyles}
-          onSaved={setStyleId}
-          onClose={() => setEditing(null)}
-        />
-      )}
-      {full?.image && <Lightbox t={full} onClose={() => setFull(null)} />}
+        {editing && (
+          <StyleEditor
+            start={editing.style}
+            fresh={editing.fresh}
+            styles={styles}
+            reload={loadStyles}
+            onSaved={setStyleId}
+            onClose={() => setEditing(null)}
+          />
+        )}
+        {full?.image && <Lightbox t={full} onClose={() => setFull(null)} />}
+      </div>
+      {sheet && <HistorySheet onClose={() => setSheet(false)}>{history}</HistorySheet>}
     </div>
   );
 }
@@ -563,7 +651,11 @@ function TurnView({
               <button type="button" className="icon" aria-label="Full screen" title="Full screen" onClick={() => onFull(t)}>
                 <Icon name="maximize" />
               </button>
-              <span className="muted small num">{[t.modelName, secs(t.elapsed_ms), t.seed != null && `variation ${t.seed}`].filter(Boolean).join(" · ")}</span>
+              <span className="muted small num" title="Run time, and time per step (includes loading the model on a first run)">
+                {[t.modelName, secs(t.elapsed_ms), `${t.elapsed_ms != null && t.steps ? (t.elapsed_ms / 1000 / t.steps).toFixed(2) : "–"} s/step`, t.seed != null && `variation ${t.seed}`]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </span>
             </div>
           </>
         ) : finished(t) ? (
@@ -608,5 +700,104 @@ function Lightbox({ t, onClose }: { t: Turn; onClose: () => void }) {
         <Icon name="x" />
       </button>
     </dialog>
+  );
+}
+
+/** The history as a side sheet, on screens too narrow for it beside the chat. */
+function HistorySheet({ onClose, children }: { onClose: () => void; children: React.ReactNode }) {
+  const ref = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const d = ref.current;
+    if (d && !d.open) d.showModal();
+  }, []);
+  return (
+    <dialog ref={ref} className="sheet history-sheet" aria-labelledby="history-title" onClose={onClose}>
+      <div className="sheet-head">
+        <h2 id="history-title">History</h2>
+        <button type="button" className="icon" aria-label="Close" onClick={() => ref.current?.close()}>
+          <Icon name="x" />
+        </button>
+      </div>
+      {children}
+    </dialog>
+  );
+}
+
+/** Named sets of the settings above, kept by the host: pick one to apply it, or save, rename and delete. */
+function Profiles({ current, onApply }: { current: Omit<Profile, "name">; onApply: (p: Profile) => void }) {
+  const [list, setList] = useState<Profile[] | null>(null);
+  const [picked, setPicked] = useState("");
+  const [name, setName] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const confirm = useConfirm();
+  useEffect(() => {
+    api<{ profiles: Profile[] }>("/api/v1/profiles").then((r) => setList(r.profiles), () => setList(null));
+  }, []);
+  if (!list) return null; // only the main key can keep profiles
+
+  const save = (next: Profile[]) =>
+    api<{ profiles: Profile[] }>("/api/v1/profiles", { method: "PUT", body: JSON.stringify({ profiles: next }) }).then(
+      (r) => (setList(r.profiles), setError(null), true),
+      (e) => (setError(e.message), false),
+    );
+  const clean = name.trim();
+  const same = (p: Profile) => p.name.toLowerCase() === clean.toLowerCase();
+  const saveAs = () => {
+    const p = { ...current, name: clean };
+    save(list.some(same) ? list.map((x) => (same(x) ? p : x)) : [...list, p]).then((ok) => ok && setPicked(p.name));
+  };
+  const rename = () => save(list.map((x) => (x.name === picked ? { ...x, name: clean } : x))).then((ok) => ok && setPicked(clean));
+  const remove = () =>
+    confirm.ask({ title: `Delete "${picked}"?`, body: "This removes the saved settings. Images aren't touched.", action: "Delete" }).then(
+      (ok) => ok && save(list.filter((x) => x.name !== picked)).then((done) => done && (setPicked(""), setName(""))),
+    );
+
+  return (
+    <div className="profile-row">
+      {confirm.dialog}
+      <label>
+        Profile
+        <select
+          value={picked}
+          onChange={(e) => {
+            const p = list.find((x) => x.name === e.target.value);
+            setPicked(e.target.value);
+            setName(e.target.value);
+            if (p) onApply(p);
+          }}
+        >
+          <option value="">{list.length ? "Pick one to apply" : "None saved yet"}</option>
+          {list.map((p) => (
+            <option key={p.name}>{p.name}</option>
+          ))}
+        </select>
+      </label>
+      <label>
+        Name
+        <input
+          value={name}
+          maxLength={60}
+          placeholder="e.g. Phone wallpapers"
+          onChange={(e) => setName(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && e.preventDefault()} // Enter would make an image
+        />
+      </label>
+      <div className="profile-acts">
+        <button type="button" disabled={!clean} onClick={saveAs} title="Save these settings under this name">
+          Save
+        </button>
+        {picked && (
+          <>
+            <button type="button" disabled={!clean || clean === picked} onClick={rename}>
+              Rename
+            </button>
+            <button type="button" className="danger" onClick={remove}>
+              Delete
+            </button>
+          </>
+        )}
+      </div>
+      {error && <Alert>{error}</Alert>}
+    </div>
   );
 }

@@ -10,13 +10,20 @@ import Models from "./Models";
 import Generate from "./Generate";
 import Connect from "./Connect";
 import Logs from "./Logs";
+import Bench from "./Bench";
+import Settings from "./Settings";
+import { applyAppearance } from "./settings/Appearance";
+
+applyAppearance(); // before the first render, so a forced theme never flashes the system one
 
 const PAGES = {
   dashboard: ["Dashboard", "activity"],
   models: ["Models", "box"],
   connect: ["Connect", "plug"],
   generate: ["Generate", "image"],
+  bench: ["Bench", "gauge"],
   logs: ["Logs", "terminal"],
+  settings: ["Settings", "settings"],
 } as const satisfies Record<string, [string, IconName]>;
 type Page = keyof typeof PAGES;
 // Hover menus open a view (Models) or jump to a section (Connect) inside the page: #page/sub.
@@ -29,7 +36,15 @@ const MENUS: Partial<Record<Page, [string, string, IconName][]>> = {
     ["this-computer", "On this computer", "monitor"],
     ["share", "Share", "globe"],
     ["keys", "Keys", "key"],
+    ["apps", "Apps", "sparkles"],
     ["try", "Try it", "terminal"],
+  ],
+  settings: [
+    ["engine", "Engine", "cpu"],
+    ["downloads", "Downloads", "download"],
+    ["security", "Security", "key"],
+    ["usage", "Usage", "activity"],
+    ["appearance", "Appearance", "palette"],
   ],
 };
 const fromHash = () => {
@@ -147,7 +162,9 @@ function Dashboard() {
           {conn && page === "generate" && <Generate />}
           {conn && page === "models" && <Models tab={sub === "installed" ? "installed" : "discover"} system={system} />}
           {conn && page === "connect" && <Connect conn={conn} />}
+          {conn && page === "bench" && <Bench />}
           {conn && page === "logs" && <Logs />}
+          {conn && page === "settings" && <Settings sub={sub} />}
         </div>
       </main>
     </>

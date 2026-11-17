@@ -29,11 +29,14 @@ from app.local_models import (
     Downloads,
     chosen_variant,
     load_hardware,
+    measured_speed,
+    memory_split,
     recommend,
+    unlockable,
     variant_installed,
 )
-from app.model_folders import candidates, count_models, model_roots, normalize, read_settings, save_settings
-from app.stats import Stats
+from app.model_folders import candidates, count_models, model_roots, normalize, read_settings, save_settings, update_settings
+from app.stats import KEEP_DAYS, Stats, day_bounds
 
 COOKIE = "glint_session"
 LOGIN_TTL = 60
@@ -162,19 +165,25 @@ def _local_model(request: Request, model_id: str) -> CatalogModel:
 async def local_models(request: Request) -> dict:
     """Every local model, best fit for this machine first, with download progress."""
     models_dir = _models_dir(request)
-    hw = await asyncio.to_thread(load_hardware, request.app.state.settings.hardware_file, models_dir)
+    hw = await asyncio.to_thread(load_hardware, request.app.state.settings.hardware_file, models_dir, request.app.state.settings.engine_file)
     downloads: Downloads = request.app.state.downloads
     roots = await asyncio.to_thread(_roots, request)
-    rows = recommend(hw, list(request.app.state.models.values()), lambda v: variant_installed(roots, v))
+    rows = await asyncio.to_thread(
+        recommend,
+        hw,
+        list(request.app.state.models.values()),
+        lambda v: variant_installed(roots, v),
+        lambda model_id: measured_speed(request.app.state.settings, model_id),
+    )
     for row in rows:
         row["download"] = downloads.view(row["id"])
-    return {"hardware": hw, "models": rows}
+    return {"hardware": hw, "models": rows, "memory": memory_split(hw), "unlock": unlockable(hw, rows)}
 
 
 @router.post("/api/v1/local-models/{model_id}/download", status_code=202, dependencies=[Depends(require_main_key)])
 async def start_download(model_id: str, request: Request) -> dict:
     model = _local_model(request, model_id)
-    hw = await asyncio.to_thread(load_hardware, request.app.state.settings.hardware_file, _models_dir(request))
+    hw = await asyncio.to_thread(load_hardware, request.app.state.settings.hardware_file, _models_dir(request), request.app.state.settings.engine_file)
     downloads: Downloads = request.app.state.downloads
     downloads.start(model.id, chosen_variant(hw, model))
     return downloads.view(model.id)
@@ -197,16 +206,50 @@ async def cancel_download(model_id: str, request: Request) -> dict:
 
 
 @router.get("/api/v1/stats", dependencies=[Depends(require_main_key)])
-async def stats(request: Request, days: int = Query(default=14, ge=1, le=90)) -> dict:
+async def stats(
+    request: Request,
+    days: int = Query(default=14, ge=1, le=KEEP_DAYS),
+    range_: str | None = Query(default=None, alias="range"),
+    from_: str | None = Query(default=None, alias="from"),
+    to: str | None = None,
+    tz: int = Query(default=0, ge=-840, le=840),  # minutes east of UTC; 0 keeps UTC days for old callers
+    model: str | None = None,
+    scope: str = Query(default="all", pattern="^(all|session)$"),
+) -> dict:
     db: Stats = request.app.state.stats
-    return db.summary(days)
+    try:
+        first, last = day_bounds(range_, days, from_, to, tz)
+    except ValueError as exc:
+        raise ApiError("bad_params", str(exc)) from None
+    return db.summary(first, last, tz, model or None, scope == "session")
+
+
+@router.delete("/api/v1/stats", status_code=204, dependencies=[Depends(require_main_key), Depends(local_only)])
+async def clear_stats(request: Request) -> None:
+    """Key daily caps keep counting; they live in their own table."""
+    request.app.state.stats.clear()
+
+
+class UsageSettings(BaseModel):
+    record_usage: bool
+
+
+@router.get("/api/v1/usage/settings", dependencies=[Depends(require_main_key), Depends(local_only)])
+async def usage_settings(request: Request) -> dict:
+    return {"record_usage": request.app.state.stats.recording(), "keep_days": KEEP_DAYS}
+
+
+@router.put("/api/v1/usage/settings", dependencies=[Depends(require_main_key), Depends(local_only)])
+async def set_usage_settings(body: UsageSettings, request: Request) -> dict:
+    update_settings(_engine_file(request), {"record_usage": body.record_usage})
+    return await usage_settings(request)
 
 
 @router.get("/api/v1/system", dependencies=[Depends(require_main_key)])
 async def system(request: Request) -> dict:
     """Live status: the engine's devices and queue, and the models folder."""
     models_dir = _models_dir(request)
-    hw = await asyncio.to_thread(load_hardware, request.app.state.settings.hardware_file, models_dir)
+    hw = await asyncio.to_thread(load_hardware, request.app.state.settings.hardware_file, models_dir, request.app.state.settings.engine_file)
     jobs = request.app.state.jobs.jobs.values()
     try:
         engine = await request.app.state.providers["comfyui"].system_stats()
@@ -327,6 +370,12 @@ def lan_address() -> str | None:
             return None
 
 
+def local_hostname() -> str | None:
+    """This computer's Bonjour/mDNS name, <name>.local; whether it resolves depends on the network."""
+    name = socket.gethostname().split(".")[0]
+    return f"{name}.local" if name and name != "localhost" else None
+
+
 def _network_file(request: Request) -> Path:
     path = request.app.state.settings.network_file
     if path is None:
@@ -339,13 +388,15 @@ async def network(request: Request) -> dict:
     cfg = request.app.state.settings
     wanted = _read_json(_network_file(request))
     tunnel = _read_json(cfg.tunnel_file)
-    address = lan_address() if cfg.serve_on_network else None
+    address = lan_address()
     port = urlsplit(cfg.public_base_url).port
     return {
         "lan": {
             "on": bool(wanted.get("lan")),
             "active": cfg.serve_on_network,
-            "url": f"http://{address}:{port}" if address else None,
+            "url": f"http://{address}:{port}" if address and cfg.serve_on_network else None,
+            "ip": address,  # shown even while sharing is off, so the Connect page can say it needs it
+            "hostname": local_hostname(),
         },
         "tunnel": {
             "on": bool(wanted.get("tunnel")),
@@ -434,4 +485,16 @@ async def logs(
         raise ApiError("bad_params", f"No log '{file}'. Pick one of: {', '.join(LOG_FILES)}.")
     files = [name for name, fname in LOG_FILES.items() if (logs_dir / fname).is_file()]
     path = logs_dir / LOG_FILES[file]
-    return {"files": files, "file": file, "lines": await asyncio.to_thread(_tail, path, lines) if path.is_file() else []}
+    if not path.is_file():
+        return {"files": files, "file": file, "lines": [], "total": 0}
+    return {"files": files, "file": file, "lines": await asyncio.to_thread(_tail, path, lines),
+            "total": await asyncio.to_thread(_count_lines, path)}
+
+
+def _count_lines(path: Path) -> int:
+    """Every line in the file, not just the tail sent, for "N of M lines"."""
+    count, last = 0, b"\n"
+    with path.open("rb") as f:
+        while chunk := f.read(1 << 20):
+            count, last = count + chunk.count(b"\n"), chunk[-1:]
+    return count + (last != b"\n")  # a last line with no newline yet

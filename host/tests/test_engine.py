@@ -14,7 +14,16 @@ from app.config import Settings
 from app.engine import Engine
 from app.errors import ApiError
 from app.local_models import model_installed
-from app.model_folders import candidates, extra_model_paths, file_present, normalize, read_settings, save_settings
+from app.model_folders import (
+    candidates,
+    extra_model_paths,
+    file_present,
+    get_setting,
+    normalize,
+    read_settings,
+    save_settings,
+    update_settings,
+)
 
 CATALOG = Settings().catalog_dir
 MODELS = load_catalog(CATALOG)
@@ -43,13 +52,15 @@ def test_yaml_quotes_windows_paths_and_lists_old_folder_names() -> None:
 
 def test_settings_round_trip_and_yaml_goes_with_the_last_folder(tmp_path: Path) -> None:
     engine_file = tmp_path / "engine.json"
-    assert read_settings(engine_file) == {"preload": True, "folders": []}  # the app's default
+    assert read_settings(engine_file) == {"preload": False, "folders": []}  # off until turned on
     assert read_settings(None)["preload"] is False  # the host on its own
     save_settings(engine_file, False, ["/a"])
     assert read_settings(engine_file) == {"preload": False, "folders": ["/a"]}
     assert (tmp_path / "extra_model_paths.yaml").is_file()
+    update_settings(engine_file, {"other": 1})
     save_settings(engine_file, False, [])
     assert not (tmp_path / "extra_model_paths.yaml").exists()
+    assert get_setting(engine_file, "other") == 1  # features' own keys survive a save
 
 
 def test_normalize_takes_the_comfyui_folder_or_its_models_folder(tmp_path: Path) -> None:
