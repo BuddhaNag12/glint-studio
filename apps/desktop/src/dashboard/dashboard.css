@@ -490,6 +490,9 @@ button.chat-open[aria-current="true"] { background: var(--accent-bg); }
 .set-badge.live { border-color: var(--accent); color: var(--accent-text); background: var(--accent-bg); }
 .set-row { display: flex; justify-content: space-between; align-items: center; gap: 24px; padding: 14px 0; border-top: 1px solid var(--hairline); }
 .set-head + .set-row { border-top: 0; }
+/* A section's error sits between its title and first row: give it room, and no divider right under it. */
+.set-section > .alert { margin: 8px 0 12px; }
+.set-section > .alert + .set-row { border-top: 0; }
 .set-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 240px; }
 .set-control { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex: 0 1 auto; min-width: 0; }
 @media (max-width: 899px) {
