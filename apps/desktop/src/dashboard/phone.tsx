@@ -7,7 +7,7 @@ import Generate from "./Generate";
 import { Alert, Icon } from "./ui";
 
 const STORE = "glint.key";
-const PAIR = "Scan the QR code on Glint Studio's Connect page (Pair a phone) to use this page.";
+const PAIR = "Scan the QR code on Glint Studio's API page (Pair a phone) to use this page.";
 
 /** The QR code opens /m#key=…: keep the key on this phone and take it out of the address bar. The fragment
  * never reaches the host or its log. */

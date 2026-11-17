@@ -32,10 +32,11 @@ fn login_url(host_url: &str, api_key: &str, exp: u64) -> String {
     format!("{host_url}/login?exp={exp}&sig={sig}")
 }
 
-/// Starts the host if needed, opens the dashboard in the browser, and tucks the app into the menu bar.
+/// Starts the host if needed, opens the dashboard (at `page`, if given) in the browser, and tucks the
+/// app into the menu bar.
 #[tauri::command]
-pub async fn open_dashboard(app: AppHandle) -> Result<(), String> {
-    open_page(app, "").await
+pub async fn open_dashboard(app: AppHandle, page: Option<String>) -> Result<(), String> {
+    open_page(app, page.as_deref().unwrap_or("")).await
 }
 
 /// Opens one dashboard page ("generate", "models/discover"; "" for the overview). The page rides in the

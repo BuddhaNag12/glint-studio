@@ -1,0 +1,32 @@
+{
+  "fill": {
+    "solid": "srgb:0.05882,0.09020,0.16471,1.00000"
+  },
+  "groups": [
+    {
+      "layers": [
+        {
+          "image-name": "star.svg",
+          "name": "star"
+        },
+        {
+          "image-name": "ink.svg",
+          "name": "letters"
+        }
+      ],
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.5
+      },
+      "translucency": {
+        "enabled": true,
+        "value": 0.5
+      }
+    }
+  ],
+  "supported-platforms": {
+    "squares": [
+      "macOS"
+    ]
+  }
+}

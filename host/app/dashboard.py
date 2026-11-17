@@ -398,7 +398,7 @@ async def network(request: Request) -> dict:
             "on": bool(wanted.get("lan")),
             "active": cfg.serve_on_network,
             "url": f"http://{address}:{port}" if address and cfg.serve_on_network else None,
-            "ip": address,  # shown even while sharing is off, so the Connect page can say it needs it
+            "ip": address,  # shown even while sharing is off, so the API page can say it needs it
             "hostname": local_hostname(),
         },
         "tunnel": {

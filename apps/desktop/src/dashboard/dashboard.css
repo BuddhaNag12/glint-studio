@@ -2,29 +2,37 @@
 
 /* Shell: a sticky top bar (brand, page nav, engine state) over a centred page. Under 1024px the nav drops to its
    own row and scrolls sideways; the hover menus only add shortcuts, so they go away where there is no hover. */
-.topbar { position: sticky; top: 0; z-index: 20; background: var(--surface-0); border-bottom: 1px solid var(--hairline); }
+.topbar { position: sticky; top: 0; z-index: 20; background: color-mix(in srgb, var(--surface-0) 82%, transparent); backdrop-filter: blur(16px); }
 .topbar-in {
   max-width: 1504px; margin: 0 auto; padding: 12px 32px; display: grid; align-items: center; gap: 16px;
   grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
 }
 .topbar .engine { justify-self: end; }
-.brand { display: flex; align-items: center; gap: 10px; font-size: 15px; line-height: 20px; font-weight: 500; color: var(--text-1); text-decoration: none; }
+.brand { display: flex; align-items: center; gap: 10px; white-space: nowrap; font-size: 15px; line-height: 20px; font-weight: 650; letter-spacing: -0.01em; color: var(--text-1); text-decoration: none; }
+.brand .mark { width: 36px; height: 36px; box-shadow: var(--shadow-press); }
 .brand > span:last-child { display: flex; flex-direction: column; }
 .brand small { font-size: 12px; line-height: 16px; font-weight: 400; color: var(--text-3); }
-.engine { display: flex; align-items: center; gap: 8px; font-size: 13px; line-height: 18px; color: var(--text-2); white-space: nowrap; }
+.engine {
+  display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 0 16px; border-radius: 999px; background: var(--surface-1);
+  border: 1px solid var(--hairline); box-shadow: var(--shadow-card); font-size: 13px; line-height: 18px; color: var(--text-2); white-space: nowrap;
+}
 .engine > span:first-of-type { color: var(--text-1); }
 .engine.bad > span:first-of-type { color: var(--bad); }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex: none; }
 .engine.bad .dot { background: var(--bad); }
 .engine.quiet .dot { background: var(--text-3); }
-.nav { list-style: none; margin: 0; padding: 4px; display: flex; gap: 2px; background: var(--surface-2); border-radius: 12px; }
+/* The page nav: a white pill holding pill links; the open page is an ink pill, like a selected segment. */
+.nav {
+  list-style: none; margin: 0; padding: 5px; display: flex; gap: 2px; background: var(--surface-1); border: 1px solid var(--hairline);
+  border-radius: 999px; box-shadow: var(--shadow-card);
+}
 .nav-item { position: relative; }
 .nav-item > a {
-  display: flex; align-items: center; gap: 8px; padding: 6px 14px; border-radius: 8px; color: var(--text-2); text-decoration: none;
-  font-size: 14px; line-height: 20px; white-space: nowrap; transition: color 140ms var(--ease), background-color 140ms var(--ease);
+  display: flex; align-items: center; gap: 8px; min-height: 36px; padding: 6px 16px; border-radius: 999px; color: var(--text-2); text-decoration: none;
+  font-size: 14px; line-height: 20px; font-weight: 500; white-space: nowrap; transition: color 140ms var(--ease), background-color 140ms var(--ease);
 }
-.nav-item > a:hover { color: var(--text-1); }
-.nav-item > a[aria-current="page"] { background: var(--surface-1); color: var(--text-1); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06); }
+.nav-item > a:hover { color: var(--text-1); background: var(--surface-2); }
+.nav-item > a[aria-current="page"] { background: var(--text-1); color: var(--surface-1); font-weight: 600; box-shadow: var(--shadow-press); }
 .nav-menu {
   position: absolute; top: 100%; left: 50%; z-index: 1; padding-top: 8px; /* the padding bridges the gap, so the menu stays open */
   transform: translate(-50%, -4px); opacity: 0; visibility: hidden;
@@ -33,10 +41,10 @@
 .nav-item:hover > .nav-menu, .nav-item:has(:focus-visible) > .nav-menu { opacity: 1; visibility: visible; transform: translate(-50%, 0); }
 .nav-menu ul {
   list-style: none; margin: 0; min-width: 200px; padding: 6px; display: flex; flex-direction: column; gap: 2px;
-  background: var(--surface-1); border: 1px solid var(--hairline); border-radius: 12px; box-shadow: var(--shadow-float);
+  background: var(--surface-1); border: 1px solid var(--hairline); border-radius: var(--r-md); box-shadow: var(--shadow-float);
 }
 .nav-menu a {
-  display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: var(--text-2); text-decoration: none;
+  display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: var(--r-sm); color: var(--text-2); text-decoration: none;
   font-size: 14px; line-height: 20px; white-space: nowrap;
 }
 .nav-menu a:hover, .nav-menu a:focus-visible { background: var(--surface-2); color: var(--text-1); }
@@ -45,13 +53,29 @@
 .main > .content { max-width: 1440px; margin: 0 auto; display: flex; flex-direction: column; gap: 24px; }
 .content [id] { scroll-margin-top: 120px; }
 @media (hover: none) { .nav-menu { display: none; } }
+/* Narrower than the full nav: only the open page keeps its label. Narrower still: the nav takes its own row across
+   the full width, and on a phone it is icons only (each link keeps its name for screen readers and as a tooltip). */
+@media (max-width: 1279px) {
+  .topbar-in { grid-template-columns: auto minmax(0, 1fr) auto; }
+  .topbar nav { justify-self: center; }
+  .nav-item > a:not([aria-current="page"]) { padding: 6px 11px; }
+  .nav-item > a:not([aria-current="page"]) .nav-label { display: none; }
+}
 @media (max-width: 1023px) {
-  .topbar-in { grid-template-columns: minmax(0, 1fr) auto; padding: 10px 16px; row-gap: 10px; }
-  .topbar nav { grid-column: 1 / -1; grid-row: 2; overflow-x: auto; scrollbar-width: none; margin: 0 -16px; padding: 0 16px; }
-  .nav { width: max-content; }
   .nav-menu { display: none; }
   .main { padding: 20px 16px 32px; }
+}
+@media (max-width: 899px) {
+  .topbar-in { grid-template-columns: minmax(0, 1fr) auto; padding: 10px 16px; row-gap: 10px; }
+  .topbar nav { grid-column: 1 / -1; grid-row: 2; justify-self: stretch; }
+  .nav { justify-content: space-between; }
+  .nav-item { flex: 1 1 auto; }
+  .nav-item > a { justify-content: center; }
   .content [id] { scroll-margin-top: 144px; }
+}
+@media (max-width: 519px) {
+  .nav-item > a, .nav-item > a:not([aria-current="page"]) { padding: 6px 0; min-height: 40px; }
+  .nav-label { display: none; }
 }
 
 .page-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; flex-wrap: wrap; }
@@ -73,9 +97,9 @@
 
 /* Status. */
 .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; }
-.tile { padding: 16px 20px; gap: 6px; }
+.tile { padding: 20px 24px; gap: 6px; }
 .tile > :first-child { font-size: 13px; line-height: 18px; color: var(--text-2); }
-.figure { font-size: 32px; line-height: 40px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.figure { font-size: 32px; line-height: 40px; font-weight: 650; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
 .figure small { font-size: 16px; line-height: 24px; font-weight: 400; color: var(--text-2); }
 .delta { display: flex; align-items: center; gap: 4px; font-size: 12px; line-height: 16px; color: var(--text-2); font-variant-numeric: tabular-nums; }
 .delta.bad { color: var(--bad); }
@@ -108,12 +132,12 @@
 table.heat-table th, table.heat-table td { padding-right: 8px; }
 .tooltip {
   position: absolute; top: 0; transform: translateX(-50%); pointer-events: none; white-space: nowrap; background: var(--surface-1);
-  border: 1px solid var(--hairline); border-radius: 8px; box-shadow: var(--shadow-float); padding: 8px 10px;
+  border: 1px solid var(--hairline); border-radius: var(--r-sm); box-shadow: var(--shadow-float); padding: 8px 12px;
   display: flex; flex-direction: column; gap: 2px; font-size: 12px; line-height: 16px; font-variant-numeric: tabular-nums;
 }
 .tooltip > :first-child { color: var(--text-2); }
 .jobs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
-.job { display: flex; flex-direction: column; gap: 8px; padding: 12px; border-radius: 8px; border: 1px solid var(--hairline); }
+.job { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; border-radius: var(--r-md); border: 1px solid var(--hairline); }
 .job.running { background: var(--surface-2); border-color: transparent; }
 .job-line { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 14px; line-height: 20px; }
 .job-line > :first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
@@ -137,7 +161,7 @@ table.heat-table th, table.heat-table td { padding-right: 8px; }
 }
 .model-row > :first-child { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .model-name { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.model-name strong { font-size: 16px; line-height: 24px; font-weight: 500; }
+.model-name strong { font-size: 16px; line-height: 24px; font-weight: 600; }
 .model-row > :last-child { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
 .model-row.off .model-name strong { color: var(--text-2); }
 @media (max-width: 899px) {
@@ -150,6 +174,8 @@ table.heat-table th, table.heat-table td { padding-right: 8px; }
 
 /* Connect. */
 .copyable .button, .copyable button { flex: none; }
+.table-scroll { overflow-x: auto; position: relative; } /* relative: keeps .sr-only labels inside the scroll box */
+.table-scroll > table { min-width: 600px; } /* on a phone it scrolls sideways rather than crush the columns */
 .share-row { display: flex; flex-direction: column; gap: 8px; padding: 16px 0; border-top: 1px solid var(--hairline); }
 .share-row:first-of-type { border-top: 0; padding-top: 0; }
 .share-row:last-of-type { padding-bottom: 0; }
@@ -157,8 +183,8 @@ table.heat-table th, table.heat-table td { padding-right: 8px; }
 .share-row .copyable { padding-left: 42px; }
 .pairing { display: flex; gap: 20px; align-items: flex-start; flex-wrap: wrap; }
 .pairing > div { flex: 1 1 200px; display: flex; flex-direction: column; gap: 8px; }
-.qr { width: 200px; height: 200px; flex: none; border-radius: 8px; }
-.key-made { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; border-radius: 8px; background: var(--accent-bg); }
+.qr { width: 200px; height: 200px; flex: none; border-radius: var(--r-md); }
+.key-made { display: flex; flex-direction: column; gap: 8px; padding: 12px 16px; border-radius: var(--r-md); background: var(--accent-bg); }
 .key-form { border-top: 1px solid var(--hairline); padding-top: 16px; gap: 16px; }
 
 /* Logs: a tail of one process log, each line with its level. Errors take the one alarm color; warnings stay
@@ -193,7 +219,7 @@ table.heat-table th, table.heat-table td { padding-right: 8px; }
 .hw-id { display: flex; gap: 16px; align-items: flex-start; min-width: 0; }
 .hw-id > div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .hw-id h2 { font-size: 18px; line-height: 24px; }
-.hw-icon { flex: none; display: grid; place-items: center; width: 48px; height: 48px; border-radius: 10px; background: var(--accent-bg); color: var(--accent-text); }
+.hw-icon { flex: none; display: grid; place-items: center; width: 48px; height: 48px; border-radius: 14px; background: var(--accent-bg); color: var(--accent-text); }
 .hw-label { font-size: 12px; line-height: 16px; color: var(--text-2); text-transform: uppercase; letter-spacing: 0.04em; }
 .hw-budget { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }
 .stackbar { display: flex; gap: 2px; height: 12px; }
@@ -228,7 +254,7 @@ table.heat-table th, table.heat-table td { padding-right: 8px; }
 .chat-log { flex: 1; display: flex; flex-direction: column; gap: 32px; }
 .hello { margin: auto 0; padding: 48px 0 24px; display: flex; flex-direction: column; align-items: center; gap: 8px; text-align: center; }
 .hello p { margin: 0; }
-.hello-title { font-size: 28px; line-height: 36px; font-weight: 500; }
+.hello-title { font-size: 28px; line-height: 36px; font-weight: 650; letter-spacing: -0.02em; }
 .examples { width: 100%; margin-top: 16px; display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 8px; }
 button.example {
   justify-content: flex-start; text-align: left; white-space: normal; padding: 12px 14px; border-radius: 12px;
@@ -323,7 +349,7 @@ button.tile-edit {
 .composer textarea.prompt:focus-visible { outline: none; }
 .composer-row { display: flex; align-items: center; gap: 8px; }
 .pill {
-  position: relative; display: inline-flex; align-items: center; gap: 6px; min-height: 36px; padding: 0 12px; border-radius: 18px;
+  position: relative; display: inline-flex; align-items: center; gap: 6px; min-height: 36px; padding: 0 14px; border-radius: 999px;
   border: 1px solid var(--hairline); background: none; color: var(--text-2); font-size: 13px; line-height: 18px; cursor: pointer;
 }
 .pill:hover { background: var(--surface-2); color: var(--text-1); }
@@ -356,7 +382,7 @@ dialog.sheet::backdrop { background: var(--scrim); }
 dialog.lightbox { margin: 0; width: 100vw; max-width: none; height: 100dvh; max-height: none; padding: 24px; border: 0; background: rgba(0, 0, 0, 0.9); cursor: zoom-out; }
 dialog.lightbox[open] { display: grid; place-items: center; }
 dialog.lightbox::backdrop { background: rgba(0, 0, 0, 0.6); }
-dialog.lightbox img { max-width: 100%; max-height: calc(100dvh - 48px); object-fit: contain; border-radius: 8px; }
+dialog.lightbox img { max-width: 100%; max-height: calc(100dvh - 48px); object-fit: contain; border-radius: var(--r-md); }
 dialog.lightbox button { position: absolute; top: 16px; right: 16px; color: #fff; background: rgba(255, 255, 255, 0.14); }
 
 @media (max-width: 599px) {
@@ -383,15 +409,37 @@ dialog.lightbox button { position: absolute; top: 16px; right: 16px; color: #fff
 .phone-chat .reply-bar .icon { width: 44px; }
 .phone-chat button.send { width: 44px; min-height: 44px; }
 /* Generate's history of past images: a column beside the chat on wide screens, a side sheet on narrow ones. */
-.gen.wide { display: grid; grid-template-columns: 280px minmax(0, 1fr); gap: 24px; align-items: start; }
-.history-side { position: sticky; top: 88px; display: flex; flex-direction: column; gap: 8px; max-height: calc(100dvh - 120px); min-height: 0; }
-.history-title { font-size: 15px; line-height: 20px; margin: 0; }
+/* The side is its own card, so past chats and images read apart from the conversation. */
+.gen.wide { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 32px; align-items: start; }
+.history-side {
+  position: sticky; top: 88px; display: flex; flex-direction: column; gap: 12px; max-height: calc(100dvh - 112px); min-height: 0; padding: 12px;
+  background: var(--surface-1); border: 1px solid var(--hairline); border-radius: var(--r-lg); box-shadow: var(--shadow-card);
+}
+.history-side .segmented, .history-sheet .segmented { display: flex; }
+.history-side .segmented button, .history-sheet .segmented button { flex: 1; }
+.history-sheet .segmented { margin-top: 16px; }
 .history { display: flex; flex-direction: column; gap: 8px; min-height: 0; }
-.history-sheet .history { margin-top: 16px; }
+.history-sheet .history { margin-top: 12px; }
+.history-sheet > .muted, .history-side > .muted { margin: 4px 0 0; }
+.chat-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 2px; border-radius: var(--r-md); }
+.chat-item:hover { background: var(--surface-2); }
+button.chat-open {
+  display: grid; grid-template-columns: 44px minmax(0, 1fr); align-items: center; gap: 10px; min-height: 0; padding: 6px; border: 0; border-radius: var(--r-md);
+  background: none; color: var(--text-1); text-align: left; font-weight: 400; justify-content: stretch; white-space: normal;
+}
+button.chat-open:hover { background: none; }
+button.chat-open[aria-current="true"] { background: var(--accent-bg); }
+.chat-open .thumb { width: 44px; height: 44px; border-radius: var(--r-sm); overflow: hidden; background: var(--surface-2); }
+.chat-open .thumb img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.chat-open > span:last-child { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.chat-title { font-size: 13px; line-height: 18px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-item .meta { font-size: 12px; line-height: 16px; color: var(--text-3); }
+.chat-item > button.icon { margin-right: 4px; color: var(--text-3); }
+.chat-item > button.icon:hover { color: var(--bad); }
 .history-list { list-style: none; margin: 0; padding: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
-.history-item { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 10px; padding: 6px; border-radius: 10px; }
+.history-item { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 10px; padding: 6px; border-radius: var(--r-md); }
 .history-item:hover { background: var(--surface-2); }
-.history-item button.thumb { width: 64px; height: 64px; padding: 0; border: 0; border-radius: 8px; overflow: hidden; background: var(--surface-2); cursor: zoom-in; }
+.history-item button.thumb { width: 64px; height: 64px; padding: 0; border: 0; border-radius: var(--r-sm); overflow: hidden; background: var(--surface-2); cursor: zoom-in; }
 .history-item .thumb img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .history-item p { margin: 0; font-size: 13px; line-height: 18px; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .history-item .meta { display: block; font-size: 12px; line-height: 16px; color: var(--text-3); }
@@ -412,7 +460,7 @@ dialog.lightbox button { position: absolute; top: 16px; right: 16px; color: #fff
 .memory-row + .share-row { border-top: 0; padding-top: 16px; padding-bottom: 16px; }
 .sub-title { display: flex; align-items: center; gap: 8px; margin: 16px 0 4px; font-size: 15px; padding-top: 16px; border-top: 1px solid var(--hairline); }
 .folders { list-style: none; margin: 12px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
-.folders li { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid var(--hairline); border-radius: 10px; }
+.folders li { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 12px; padding: 10px 14px; border: 1px solid var(--hairline); border-radius: var(--r-md); }
 .folders li.found { border-style: dashed; }
 .folders code { overflow-wrap: anywhere; font-size: 13px; }
 .link-folder { display: flex; gap: 8px; margin-top: 12px; }
@@ -427,10 +475,10 @@ dialog.lightbox button { position: absolute; top: 16px; right: 16px; color: #fff
 .settings-nav { position: sticky; top: 88px; }
 .settings-nav ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
 .settings-nav a {
-  display: block; padding: 6px 12px; border-radius: 8px; color: var(--text-2); text-decoration: none; font-size: 14px; line-height: 20px; white-space: nowrap;
+  display: block; padding: 6px 14px; border-radius: 999px; color: var(--text-2); text-decoration: none; font-size: 14px; line-height: 20px; white-space: nowrap;
 }
 .settings-nav a:hover { color: var(--text-1); background: var(--surface-2); }
-.settings-nav a[aria-current="true"] { color: var(--text-1); background: var(--surface-2); font-weight: 500; }
+.settings-nav a[aria-current="true"] { color: var(--surface-1); background: var(--text-1); font-weight: 600; }
 .settings-body { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
 .set-section { gap: 0; }
 .set-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 4px; }
@@ -443,11 +491,13 @@ dialog.lightbox button { position: absolute; top: 16px; right: 16px; color: #fff
 .set-control { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex: 0 1 auto; min-width: 0; }
 @media (max-width: 899px) {
   .settings { grid-template-columns: minmax(0, 1fr); gap: 16px; }
-  .settings-nav { top: 0; position: static; overflow-x: auto; }
-  .settings-nav ul { flex-direction: row; }
+  .settings-nav { top: 0; position: static; }
+  .settings-nav ul { flex-direction: row; flex-wrap: wrap; }
 }
 @media (max-width: 599px) {
   .set-row { flex-direction: column; align-items: stretch; gap: 8px; }
+  .set-text { flex-basis: auto; } /* its 240px basis would become a height in a column */
+  .share-row .help, .share-row .copyable { padding-left: 0; }
   .set-control { justify-content: flex-start; flex-wrap: wrap; }
 }
 

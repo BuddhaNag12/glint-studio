@@ -1,6 +1,6 @@
 import { CSSProperties, FormEvent, KeyboardEvent, useEffect, useRef, useState } from "react";
 import { api, JobEvent, Model, onJobEvents, Quality, secs, Style } from "./api";
-import { Alert, Icon, iconOr, useConfirm } from "./ui";
+import { Alert, Icon, iconOr, Tabs, useConfirm } from "./ui";
 import History, { HistoryItem } from "./History";
 import StyleEditor, { BLANK, copyOf, Listed } from "./Styles";
 
@@ -39,8 +39,9 @@ type JobView = {
   seed?: number | null;
   data?: { b64_json?: string }[];
 };
-/** One prompt and the image it made. Finished turns are kept in this browser. */
+/** One prompt and the image it made. Finished turns are kept in this browser, grouped into chats. */
 type Turn = Omit<JobView, "data"> & {
+  chat?: string; // absent on turns kept before there were several chats: they make up one chat, FIRST
   body: Body;
   modelName: string;
   styleName: string;
@@ -55,6 +56,9 @@ type Turn = Omit<JobView, "data"> & {
 // The page scrolls, with the composer stuck to the bottom: the newest turn is at the very end.
 const toEnd = (behavior: ScrollBehavior) => requestAnimationFrame(() => document.scrollingElement?.scrollTo({ top: 1e9, behavior }));
 const finished = (r: { status: string }) => ["done", "failed", "cancelled"].includes(r.status);
+const FIRST = "first";
+const chatOf = (t: Turn) => t.chat ?? FIRST;
+const newChat = () => Date.now().toString(36); // crypto.randomUUID needs https, and the phone page is plain http
 const WIDE = "(min-width: 1200px)"; // room for the history beside the chat; narrower, it opens as a sheet
 
 // Mirrors Profile in host/app/history.py: "" and null mean the default.
@@ -105,6 +109,8 @@ export default function Generate({ phone }: { phone?: boolean }) {
   const [error, setError] = useState<string | null>(null);
   const [wide, setWide] = useState(() => matchMedia(WIDE).matches);
   const [sheet, setSheet] = useState(false); // the history, on narrow screens
+  const [chatId, setChatId] = useState(newChat);
+  const [side, setSide] = useState<"chats" | "images">("chats");
   const live = useRef(turns);
   live.current = turns;
   const kept = useRef(new Set<string>());
@@ -145,6 +151,8 @@ export default function Generate({ phone }: { phone?: boolean }) {
       const old = (all as Turn[]).sort((a, b) => a.created - b.created);
       old.filter(finished).forEach((t) => kept.current.add(t.id));
       setTurns((now) => [...old, ...now.filter((t) => !old.some((o) => o.id === t.id))]);
+      // Reopen the latest chat, unless a message went out before the kept ones loaded.
+      if (old.length) setChatId((id) => (live.current.some((t) => chatOf(t) === id) ? id : chatOf(old[old.length - 1])));
       // Jobs still going when the page was left: catch up, or mark them lost if the engine restarted since.
       for (const t of old.filter((t) => !finished(t)))
         api<JobView>(`/api/v1/jobs/${t.id}`).then(
@@ -207,7 +215,7 @@ export default function Generate({ phone }: { phone?: boolean }) {
     setError(null);
     api<JobView>("/api/v1/jobs", { method: "POST", body: JSON.stringify(body) }).then(
       (job) => {
-        const turn: Turn = { ...job, progress: 0, elapsed_ms: null, error: null, body, modelName: m.name, styleName, shape: shapeName, w, h, created: Date.now() };
+        const turn: Turn = { ...job, chat: chatId, progress: 0, elapsed_ms: null, error: null, body, modelName: m.name, styleName, shape: shapeName, w, h, created: Date.now() };
         setTurns((all) => [...all, turn]);
         store("readwrite", (s) => s.put(turn)).catch(() => {}); // kept now too, so leaving the page doesn't lose it
         toEnd("smooth");
@@ -314,28 +322,45 @@ export default function Generate({ phone }: { phone?: boolean }) {
     if (p.model && m?.id !== p.model) setError(`${p.model} isn't available, so the profile was applied to ${m?.name}.`);
   };
   const cancel = (id: string) => api(`/api/v1/jobs/${id}`, { method: "DELETE" }).catch((e) => setError(e.message));
-  const clear = () =>
-    confirm
-      .ask({ title: "Start a new chat?", body: "This chat and its images are only kept in this browser. Save any you want first.", action: "Clear chat" })
-      .then((ok) => {
-        if (!ok) return;
-        store("readwrite", (s) => s.clear()).catch(() => {});
-        kept.current.clear();
-        setTurns((all) => all.filter((t) => !finished(t)));
-      });
+  const shown = turns.filter((t) => chatOf(t) === chatId);
+  const startChat = () => (setChatId(newChat()), box.current?.focus());
+  const openChat = (id: string) => (setChatId(id), setSheet(false), toEnd("auto"));
+  // The images stay in the host's history (the Images tab); only the chat goes.
+  const forget = (gone: Turn[]) => {
+    store("readwrite", (s) => gone.forEach((t) => s.delete(t.id))).catch(() => {});
+    gone.forEach((t) => kept.current.delete(t.id));
+    setTurns((all) => all.filter((t) => !gone.includes(t)));
+  };
+  const deleteChat = (id: string, title: string) =>
+    confirm.ask({ title: "Delete this chat?", body: `"${title}" goes from this browser. Its images stay under Images.`, action: "Delete chat" }).then((ok) => {
+      if (!ok) return;
+      forget(turns.filter((t) => chatOf(t) === id));
+      if (id === chatId) setChatId(newChat());
+    });
+  const deleteAll = () =>
+    confirm.ask({ title: "Delete all chats?", body: "Every chat goes from this browser. The images stay under Images.", action: "Delete all" }).then((ok) => {
+      if (!ok) return;
+      forget(turns.filter(finished));
+      setChatId(newChat());
+    });
+  const past = (
+    <>
+      <Tabs label="History" value={side} onChange={setSide} options={[["chats", "Chats"], ["images", "Images"]]} />
+      {side === "chats" ? <Chats turns={turns} current={chatId} onOpen={openChat} onDelete={deleteChat} onDeleteAll={deleteAll} /> : history}
+    </>
+  );
 
   return (
     <div className={wide ? "gen wide" : "gen"}>
       {wide && (
-        <aside className="history-side" aria-label="Past images">
-          <h2 className="history-title">History</h2>
-          {history}
+        <aside className="history-side" aria-label="History">
+          {past}
         </aside>
       )}
       <div className={phone ? "chat phone-chat" : "chat"}>
         <h1 className="sr-only">Generate</h1>
         {confirm.dialog}
-        {(turns.length > 0 || !wide) && (
+        {(shown.length > 0 || !wide) && (
           <div className="chat-top">
             {!wide && (
               <button type="button" className="ghost small" aria-haspopup="dialog" onClick={() => setSheet(true)}>
@@ -343,8 +368,8 @@ export default function Generate({ phone }: { phone?: boolean }) {
                 History
               </button>
             )}
-            {turns.length > 0 && (
-              <button type="button" className="ghost small" onClick={clear}>
+            {shown.length > 0 && (
+              <button type="button" className="ghost small" onClick={startChat}>
                 <Icon name="newchat" size={16} />
                 New chat
               </button>
@@ -353,7 +378,7 @@ export default function Generate({ phone }: { phone?: boolean }) {
         )}
 
         <div className="chat-log" aria-live="polite">
-          {turns.length === 0 ? (
+          {shown.length === 0 ? (
             <div className="hello">
               <p className="hello-title">What should we make?</p>
               <p className="muted">Describe an image. Each message makes a new one, on this computer.</p>
@@ -366,7 +391,7 @@ export default function Generate({ phone }: { phone?: boolean }) {
               </div>
             </div>
           ) : (
-            turns.map((t) => <TurnView key={t.id} t={t} onCancel={cancel} onAgain={again} onEdit={edit} onFull={setFull} />)
+            shown.map((t) => <TurnView key={t.id} t={t} onCancel={cancel} onAgain={again} onEdit={edit} onFull={setFull} />)
           )}
         </div>
 
@@ -515,7 +540,7 @@ export default function Generate({ phone }: { phone?: boolean }) {
         )}
         {full?.image && <Lightbox t={full} onClose={() => setFull(null)} />}
       </div>
-      {sheet && <HistorySheet onClose={() => setSheet(false)}>{history}</HistorySheet>}
+      {sheet && <HistorySheet onClose={() => setSheet(false)}>{past}</HistorySheet>}
     </div>
   );
 }
@@ -704,6 +729,57 @@ function Lightbox({ t, onClose }: { t: Turn; onClose: () => void }) {
 }
 
 /** The history as a side sheet, on screens too narrow for it beside the chat. */
+/** The chats kept in this browser, newest first: open one, or delete one or all of them. */
+function Chats({
+  turns,
+  current,
+  onOpen,
+  onDelete,
+  onDeleteAll,
+}: {
+  turns: Turn[];
+  current: string;
+  onOpen: (id: string) => void;
+  onDelete: (id: string, title: string) => void;
+  onDeleteAll: () => void;
+}) {
+  const byChat = new Map<string, Turn[]>();
+  for (const t of turns) byChat.set(chatOf(t), [...(byChat.get(chatOf(t)) ?? []), t]);
+  const chats = [...byChat].map(([id, ts]) => ({ id, ts, last: ts[ts.length - 1] })).sort((a, b) => b.last.created - a.last.created);
+  if (!chats.length) return <p className="muted small">Your chats show up here.</p>;
+  return (
+    <div className="history">
+      <ul className="history-list">
+        {chats.map(({ id, ts, last }) => {
+          const title = ts[0].body.prompt;
+          const image = [...ts].reverse().find((t) => t.image)?.image;
+          const n = ts.filter((t) => t.status === "done").length;
+          return (
+            <li key={id} className="chat-item">
+              <button type="button" className="chat-open" aria-current={id === current || undefined} onClick={() => onOpen(id)}>
+                <span className="thumb">{image && <img src={`data:image/png;base64,${image}`} alt="" />}</span>
+                <span>
+                  <span className="chat-title">{title}</span>
+                  <span className="meta num">
+                    {n === 1 ? "1 image" : `${n} images`} · {new Date(last.created).toLocaleString([], { dateStyle: "short", timeStyle: "short" })}
+                  </span>
+                </span>
+              </button>
+              <button type="button" className="icon" aria-label={`Delete chat: ${title}`} title="Delete chat" onClick={() => onDelete(id, title)}>
+                <Icon name="trash" size={16} />
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+      <button type="button" className="ghost small" onClick={onDeleteAll}>
+        <Icon name="trash" size={16} />
+        Delete all chats
+      </button>
+    </div>
+  );
+}
+
 function HistorySheet({ onClose, children }: { onClose: () => void; children: React.ReactNode }) {
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => {

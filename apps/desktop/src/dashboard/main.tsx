@@ -19,7 +19,7 @@ applyAppearance(); // before the first render, so a forced theme never flashes t
 const PAGES = {
   dashboard: ["Dashboard", "activity"],
   models: ["Models", "box"],
-  connect: ["Connect", "plug"],
+  connect: ["API", "plug"],
   generate: ["Generate", "image"],
   bench: ["Bench", "gauge"],
   logs: ["Logs", "terminal"],
@@ -130,9 +130,9 @@ function Dashboard() {
             <ul className="nav">
               {(Object.keys(PAGES) as Page[]).map((p) => (
                 <li key={p} className="nav-item">
-                  <a href={`#${p}`} aria-current={p === page ? "page" : undefined}>
+                  <a href={`#${p}`} aria-current={p === page ? "page" : undefined} aria-label={PAGES[p][0]} title={PAGES[p][0]}>
                     <Icon name={PAGES[p][1]} />
-                    {PAGES[p][0]}
+                    <span className="nav-label">{PAGES[p][0]}</span>
                   </a>
                   {MENUS[p] && (
                     <div className="nav-menu">
