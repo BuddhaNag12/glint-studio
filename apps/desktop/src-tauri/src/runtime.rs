@@ -77,6 +77,17 @@ pub struct HostInfo {
     comfy_folders: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Health {
+    Running,
+    /// The host is up but ComfyUI gave up restarting.
+    EngineStopped,
+    Starting,
+    Stopped,
+    /// The host gave up restarting: Settings can repair it.
+    Broken,
+}
+
 /// Managed state. The locks stop a second call (React StrictMode runs effects twice in dev)
 /// from racing the first.
 #[derive(Default)]
@@ -187,6 +198,7 @@ pub async fn ensure_host(app: &AppHandle) -> Result<HostInfo, String> {
         let comfy = comfyui_spec(&paths, comfy_port);
         waits.push((COMFYUI, COMFYUI_START_TIMEOUT, comfy.log_file.clone()));
         if reuse.is_none() {
+            let _ = fs::remove_file(paths.root.join("engine_restart")); // a fresh start answers any restart asked for
             supervisor.start(comfy).map_err(|e| format!("Couldn't start ComfyUI: {e}"))?;
         }
     }
@@ -218,16 +230,27 @@ impl Runtime {
         self.host.try_lock().map(|h| h.clone()).map_err(|_| ())
     }
 
-    /// One line for the menu-bar menu.
-    pub fn status_line(&self) -> &'static str {
+    /// The server's state for the menu-bar menu.
+    pub fn health(&self) -> Health {
         use ProcessStatus::*;
         match (self.supervisor.status(HOST), self.supervisor.status(COMFYUI)) {
-            (Running, Running | Stopped | Starting) => "● Running",
-            (Running, _) => "⚠ The local engine stopped",
-            (Starting, _) => "Starting…",
-            (Stopped, _) => "○ Not running",
-            _ => "⚠ Stopped: open Setup to repair",
+            (Running, Running | Stopped | Starting) => Health::Running,
+            (Running, _) => Health::EngineStopped,
+            (Starting, _) => Health::Starting,
+            (Stopped, _) => Health::Stopped,
+            _ => Health::Broken,
         }
+    }
+
+    /// Whether the host is up or on its way, so the menu offers Stop rather than Start.
+    pub fn host_on(&self) -> bool {
+        matches!(self.supervisor.status(HOST), ProcessStatus::Running | ProcessStatus::Starting)
+    }
+
+    /// Stops the host and ComfyUI. The address and key are kept, so a start brings back the same ones.
+    pub fn stop_server(&self) {
+        self.supervisor.stop(HOST);
+        self.supervisor.stop(COMFYUI);
     }
 }
 
@@ -353,7 +376,8 @@ fn linked_folders(paths: &Paths) -> Option<String> {
     fs::read_to_string(paths.extra_model_paths()).ok()
 }
 
-/// The host rewrote the linked model folders: restart ComfyUI on the same port so it reads them.
+/// The host rewrote the linked model folders, or asked for a restart (the dashboard's Restart, which
+/// also applies a new memory guard): restart ComfyUI on the same port so it reads them.
 /// The host sees the engine come back and loads the model again.
 pub(crate) async fn follow_model_folders(app: &AppHandle) -> Result<(), String> {
     let state = app.state::<Runtime>();
@@ -362,7 +386,8 @@ pub(crate) async fn follow_model_folders(app: &AppHandle) -> Result<(), String> 
     let Some(port) = info.comfy_port else { return Ok(()) };
     let paths = app_paths(app)?;
     let folders = linked_folders(&paths);
-    if folders == info.comfy_folders {
+    let asked = fs::remove_file(paths.root.join("engine_restart")).is_ok();
+    if folders == info.comfy_folders && !asked {
         return Ok(());
     }
     info.comfy_folders = folders; // set first: a failed start isn't retried every 2 seconds
@@ -381,6 +406,8 @@ pub fn comfyui_spec(paths: &Paths, port: u16) -> ProcessSpec {
     }
     // Cheap step-by-step previews over the WebSocket, so a page can watch the image form.
     args.extend(["--preview-method".into(), "latent2rgb".into()]);
+    let engine = fs::read(paths.engine_file()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+    args.extend(memory_flags(&engine));
     ProcessSpec {
         name: COMFYUI.into(),
         program: paths.venv_python(),
@@ -391,6 +418,21 @@ pub fn comfyui_spec(paths: &Paths, port: u16) -> ProcessSpec {
             .to_vec(),
         health_url: Some(format!("http://127.0.0.1:{port}/system_stats")),
         log_file: paths.logs().join("comfyui.log"),
+    }
+}
+
+/// Mirrors SAFE_RESERVE_GB in host/app/engine_server.py.
+const SAFE_RESERVE_GB: &str = "2";
+
+/// ComfyUI's memory flags for engine.json's memory guard; mirrors memory_flags() in host/app/engine_server.py.
+/// On Apple silicon ComfyUI treats memory as shared whatever the mode, so only the reserve changes much there.
+fn memory_flags(engine: &serde_json::Value) -> Vec<String> {
+    let reserve = engine["reserve_vram_gb"].as_f64().filter(|gb| (0.0..=128.0).contains(gb)).unwrap_or(2.0);
+    match engine["memory_guard"].as_str() {
+        Some("safe") => vec!["--lowvram".into(), "--reserve-vram".into(), SAFE_RESERVE_GB.into()],
+        Some("aggressive") => vec!["--highvram".into()],
+        Some("custom") => vec!["--reserve-vram".into(), reserve.to_string()],
+        _ => vec![],
     }
 }
 
@@ -724,6 +766,25 @@ mod tests {
         let lan = host_spec(&paths, Path::new("/res"), 4321, "k", true);
         assert!(lan.args.contains(&"0.0.0.0".to_string()));
         assert!(lan.env.contains(&("SERVE_ON_NETWORK".into(), "true".into())));
+    }
+
+    #[test]
+    fn memory_guard_presets_map_to_comfyui_flags() {
+        let flags = |v: serde_json::Value| memory_flags(&v).join(" ");
+        assert_eq!(flags(serde_json::json!({})), "");
+        assert_eq!(flags(serde_json::json!({"memory_guard": "balanced"})), "");
+        assert_eq!(flags(serde_json::json!({"memory_guard": "safe", "reserve_vram_gb": 9})), "--lowvram --reserve-vram 2");
+        assert_eq!(flags(serde_json::json!({"memory_guard": "aggressive"})), "--highvram");
+        assert_eq!(flags(serde_json::json!({"memory_guard": "custom", "reserve_vram_gb": 1.5})), "--reserve-vram 1.5");
+        assert_eq!(flags(serde_json::json!({"memory_guard": "custom", "reserve_vram_gb": 3})), "--reserve-vram 3");
+        assert_eq!(flags(serde_json::json!({"memory_guard": "custom", "reserve_vram_gb": -1})), "--reserve-vram 2");
+        assert_eq!(flags(serde_json::json!({"memory_guard": "huge"})), "");
+
+        let dir = test_dir("memory");
+        let paths = Paths { root: dir.clone() };
+        fs::write(paths.engine_file(), r#"{"memory_guard": "aggressive"}"#).unwrap();
+        assert!(comfyui_spec(&paths, 1).args.contains(&"--highvram".to_string()));
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

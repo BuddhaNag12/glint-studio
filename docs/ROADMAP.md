@@ -129,7 +129,7 @@ glint-studio/
 - `runtime/`: uv, Python, venv, and ComfyUI once the local engine is installed
 - `models/`: wired into ComfyUI through `extra_model_paths.yaml`
 - `outputs/`, `styles/` (user edits), `workflows/` (imported), `providers.json` (user endpoints and models, never keys), `config.json`
-- `hardware.json` (the app's scan, for recommendations) and `stats.db` (job history, 90 days)
+- `hardware.json` (the app's scan, for recommendations) and `stats.db` (job history, 400 days)
 
 Secrets (provider API keys, network API keys, HF token) go in the OS keychain, never in files, logs or `localStorage`.
 
@@ -246,6 +246,7 @@ Everything users can change is plain JSON in the app-data folder, so it can be b
   | 6–8 GB | SDXL, Z-Image Turbo fp8 or GGUF |
   | 12–16 GB | Z-Image Turbo bf16, Flux schnell fp8 |
   | 24 GB or more | Flux dev (license shown as non-commercial), Qwen-Image fp8 |
+- **Bench page (`host/app/bench.py`, `Bench.tsx`).** A local benchmark, after oMLX's Bench page: s/image (warm-up run left out), s/step from progress events, and peak engine memory per size, run through the job queue. An optional search steps the size up within the catalog limits until a job fails. Results go to `bench.json` beside `engine.json`, and `bench.measured()` feeds the speed labels on Models, so the tiers above can be checked on real hardware.
 
 ### Catalog (`catalog/models/*.json`)
 Each model file has:
@@ -317,15 +318,19 @@ Each phase ends with a working milestone, and each can ship on its own.
 - The host serves a browser dashboard:
   - **Overview:** engine and queue status, images per day (done and failed), GPU memory, live jobs, per-model typical and slowest times, errors, styles used.
   - **Models:** recommendations for this machine and one-click downloads (resume, sha256, cancel).
+  - **Models page, richer** (2026-11-17): "This computer" shows the chip, Apple GPU cores (`system_profiler`), and a memory bar (for models / safety headroom / OS + other apps, from the recommender's own budget, `memory_split`). Discover groups models into Best for this computer, Better quality but slower, Faster and lighter ("3× faster than …", measured by a benchmark when there is one, else an estimate from weights × steps × pixels), and Other, plus an "Unlock bigger models" note when a higher memory guard would fit more (`add_tiers`, `unlockable` in `local_models.py`). Installed models have Settings: the user's own size, steps, cfg and negative, checked against the catalog limits and kept in `engine.json` `model_overrides` (`/api/v1/models/{id}/settings`). They replace the catalog's defaults, so a request, style or quality choice still wins. Memory bandwidth isn't shown: no tool reports it reliably.
   - **Connect:** the address, the API key, and a curl example.
 - Milestone: scan → open the dashboard → "Runs great" → one click → model ready → first image shows up on the Overview.
 - Done so far (2026-11-16): all of the above in code. Model `variants` in the catalog (Z-Image Turbo bf16). Recommendations and downloads moved from Rust to the host (`local_models.py`), job stats (`stats.py`), the dashboard (`dashboard.py` + `apps/desktop/src/dashboard/`), and the menu-bar icon with the signed login link (`dashboard.rs`).
 - Next: the first real local image with `cargo test real_first_image -- --ignored --nocapture`. It downloads Z-Image Turbo bf16 (about 21 GB) through the host, resuming any `.part` left in the test runtime. Then try Download in the real dashboard.
 - Done 2026-11-16: a model kept in memory and linked model folders.
-  - **Model in memory:** when ComfyUI starts, the host runs a tiny warm-up image (256×256, 1 step) with the default model, so the first real image skips the load. A watcher re-runs it after an engine restart. The Models page shows the state, with Load now, Unload (ComfyUI `/free`) and a "Load a model when Glint Studio starts" switch (on by default).
+  - **Model in memory:** when ComfyUI starts, the host runs a tiny warm-up image (256×256, 1 step) with the default model, so the first real image skips the load. A watcher re-runs it after an engine restart. The Models page shows the state, with Load now, Unload (ComfyUI `/free`) and a "Load a model when Glint Studio starts" switch (off by default since 2026-11-17, so starting the server doesn't fill GPU memory).
   - **Linked folders:** paste a ComfyUI folder, or pick one the host found (ComfyUI Desktop's config, `Documents/ComfyUI`, the Windows portable build, drives C–F). The host keeps `engine.json` and writes `extra_model_paths.yaml`; the app restarts ComfyUI with `--extra-model-paths-config` when it changes. Linked models count as installed, including under the old `unet` and `clip` folder names.
+  - **Engine server** (2026-11-17, after oMLX's admin page; `host/app/engine_server.py`): idle unload (`idle_unload_minutes`, 0 = never, and `idle_unload_by_model`) frees the model after that long with no jobs, read every watcher tick. A memory guard (`memory_guard`: safe = `--lowvram --reserve-vram 2`, balanced = none, aggressive = `--highvram`, custom = `--reserve-vram reserve_vram_gb`) is read by the app when it launches ComfyUI; the host compares it with ComfyUI's `argv` to show "Restart needed", and Restart leaves an `engine_restart` file the app picks up. The Overview has a Server card (status, version, uptime, address, memory, engine versions, Restart server, Unload model) and a first-run banner when no model is installed; Settings → Engine holds the switches.
   - Still to check: detection on a real Windows PC.
 - Still to do: smaller variants (fp8, GGUF), which need the host to put file names into the workflow; the HF token; a monochrome menu-bar icon.
+- **Download source, proxies, LAN access** (2026-11-17; `host/app/net.py`, `net_settings.py`, `auth.py`): Settings → Downloads picks Hugging Face, a mirror of it (`hf_endpoint`) or ModelScope (`resolve/master` of the same org/repo), plus HTTP/HTTPS proxy, no-proxy hosts and an extra CA file, kept as `downloads` in `engine.json`; the sha256 check still guards every file. Settings → Security has `lan_open_generation`: keyless image making (local models only, generation and job routes only) for requests straight from a private LAN address under an IP or `.local` Host, never one carrying proxy headers (the tunnel always does), never from loopback. Connect's address picker shows 127.0.0.1, localhost, `<host>.local` or the LAN IP. App keys were already API-only: the dashboard login is signed with the main key alone.
+- **Usage history** (2026-11-17): the Dashboard takes Today, Yesterday, Last 7/30/90 days or This month in local time (the API also takes `from`/`to` dates and the old `days=`), a model filter, This session / All time, and a weekday × hour heatmap with a table view. Settings → Usage has a "Record usage" switch (`record_usage` in `engine.json`) and Clear history; history keeps 400 days. Key daily caps count from their own table, so neither lifts a cap.
 
 **Phase 4 – Providers and customization (about 1–2 weeks)**
 - **Providers page:** add a provider, paste a key (keychain), "Test key", pick its models; add a remote ComfyUI or any OpenAI-compatible endpoint; add custom model IDs.
@@ -333,6 +338,7 @@ Each phase ends with a working milestone, and each can ship on its own.
 - Separate cloud queue, provider cancel where supported, the `provider_*` error codes in the UI.
 - **Workflow import:** load a ComfyUI API-format workflow, confirm the auto-mapping, use it as a model.
 - Settings: defaults, output folder and filename pattern, idle timeout, theme, Export all / Import.
+  - Done (2026-11-17): a dashboard Settings page (`#settings/<section>`) with a section nav and Engine, Downloads, Security, Usage and Appearance cards, each marked "Live" or "Restart needed" with Reset to default. Appearance: Auto, Light or Dark theme and Enhanced readability, kept per browser.
 - Milestone: a user with no GPU adds an OpenAI-compatible key and a Replicate key, generates with the Cartoon style on both, and a wrong key shows "Provider rejected your key", not a login error.
 
 **Phase 5 – Generate and Styles UI, in the dashboard (about 1–2 weeks)**
@@ -342,6 +348,7 @@ Each phase ends with a working milestone, and each can ship on its own.
 - Done so far (2026-11-16): the Generate page (prompt, style chips, model with a cloud note, Shape, seed, gallery with progress, cancel and save) and the Styles page (edit, duplicate, new, reset to default, delete, live preview), on `PUT/DELETE /api/v1/styles/{id}`. Checked against a mock image provider.
 - Also done (2026-11-16): Quality presets, an Advanced section with steps, CFG and the negative prompt (checked against the model's limits), style import and export as JSON, and jobs followed over the events socket instead of polling (the key goes in a WebSocket subprotocol, not the URL).
 - Still to do: a sampler choice under Advanced (the catalog doesn't describe samplers yet).
+- Also done (2026-11-17): a History sidebar on Generate (past images from every session with search; open one or reuse its settings; a sheet on narrow screens), from `GET /api/v1/history` with the newest 500 images kept next to the stats; saved settings profiles in `engine.json` (`GET/PUT /api/v1/profiles`); time and seconds per step on each result. The Logs page gets a line count, a refresh interval, a Table or Raw view, and the file's total line count. Still to do: peak VRAM per run (ComfyUI doesn't report it per job).
 
 **Phase 5b – Chat, motion and the menu-bar menu (next, about 1–2 weeks)**
 - **Chat history:** a left sidebar on Generate, like a chat app. Each chat keeps its prompts, settings and images; New chat, rename, delete, and search. Stored by the host (SQLite next to the stats), so the phone page sees the same history. Collapses to a drawer on narrow screens.
@@ -349,14 +356,13 @@ Each phase ends with a working milestone, and each can ship on its own.
 - **Generation animation:** while an image is being made, its frame shows a slow aurora gradient in the chosen style's colours with a soft sheen passing over it, the step progress in plain words, and the live preview fading in when ComfyUI sends one. The finished image fades in over the gradient. Reduced motion shows the gradient still, with no sheen.
 - **Page transitions:** a short fade-and-rise (about 200 ms) between dashboard pages and tabs, and for cards appearing; off with reduced motion.
 - **Workflow view:** a read-only 2D graph of the ComfyUI workflow behind a model (nodes as boxes, links as curves, laid out left to right), with the nodes the host fills in (prompt, size, seed, steps) highlighted and labelled. During a job the running node lights up from ComfyUI's `executing` events. Opened from a model on the Models page.
-- **Menu-bar menu:** every item goes straight to a place, in this order:
-  - Server running at `127.0.0.1:7788` (or "Server stopped"); clicking copies the address.
-  - Start server / Stop server (stops the host and ComfyUI; the menu stays).
-  - Models ▸ installed models, the loaded one ticked; picking one loads it. Unload, and Browse models… (opens Models).
-  - System stats ▸ GPU memory, queue, images today, refreshed every few seconds; clicking opens the Dashboard.
-  - Generate…, Connect…, Open Dashboard (each opens that dashboard page).
-  - Setup & Cloud Keys…, About Glint Studio.
-  - Quit (was "Quit Glint Studio").
+- **Menu-bar menu** (done 2026-11-17, `tray.rs`, laid out like oMLX's; still to check on Windows and Linux): every item goes straight to a place, in groups:
+  - Server: running (port 7788), in green text (orange when ComfyUI stopped, red when Settings must repair it; macOS only, other systems show plain text). Clicking opens Connect, where the address has copy buttons.
+  - Stop Server / Start Server (stops the host and ComfyUI; the address and key stay the same). Models ▸ downloaded models, the loaded one ticked; picking one loads it. Unload Model, and Browse Models… (opens Models).
+  - System Stats ▸ GPU, GPU memory, models on disk. Serving Stats ▸ queue, images and failures today, typical time per image. Both refresh every 3 seconds.
+  - Dashboard, Generate Images, Connect (each opens that dashboard page).
+  - Settings… (⌘,, the setup window), About Glint Studio.
+  - Quit (⌘Q).
 - Milestone: on Windows and macOS, start from the menu, pick a model there, generate from a chat, reopen the chat after a restart, and watch the workflow view light up while it runs.
 
 **Phase 6 – Server and remote (about 1 week)**
@@ -381,6 +387,7 @@ Each phase ends with a working milestone, and each can ship on its own.
   - **`/m`** is served from any address with no cookie. It moves the key from the link into the phone's localStorage, then shows the dashboard's Generate page. A revoked key shows how to pair again.
   - **Old dashboard tabs** reload when their key stops working, so after a rotation they show the expired page instead of retrying forever.
   - **Leftover hosts:** on start the app stops host and ComfyUI processes that run its Python but whose app has gone (a crash or a `tauri dev` rebuild), so it keeps port 7788.
+- Done 2026-11-17: MCP and app setup. `POST /mcp` (streamable HTTP, same key rules as the OpenAI endpoint) offers `generate_image`, `list_models` and `list_styles` through the job queue. Connect → Apps has the Claude Code command, Open WebUI, LibreChat and generic MCP snippets, each with "Create a key for this app". Claude Desktop gets one-click Apply and Restore (from this computer, main key only): its config starts `host/app/mcp_stdio.py`, a stdlib-only stdio→HTTP bridge run with the app's Python, so no Node.js is needed. The first Apply keeps a backup.
 
 **Phase 7 – Release (about 1 week)**
 - Signing: macOS notarization; Windows code signing (SignPath offers free signing for open-source projects).

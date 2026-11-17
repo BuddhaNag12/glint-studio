@@ -1,17 +1,14 @@
-//! The menu-bar icon and the dashboard. The dashboard is a web page the host serves; the app opens
+//! The dashboard. It is a web page the host serves; the app opens
 //! it in the browser with a one-time login link signed with the host's API key (see
 //! host/app/dashboard.py). The window is only for first-run setup, repair and cloud keys.
 
-use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use sha2::{Digest, Sha256};
-use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
-use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_opener::OpenerExt;
 
-use crate::runtime::{self, Runtime, hex};
+use crate::runtime::{self, hex};
 
 /// How long a login link works; the host refuses links that claim longer.
 const LOGIN_TTL_SECS: u64 = 60;
@@ -38,9 +35,18 @@ fn login_url(host_url: &str, api_key: &str, exp: u64) -> String {
 /// Starts the host if needed, opens the dashboard in the browser, and tucks the app into the menu bar.
 #[tauri::command]
 pub async fn open_dashboard(app: AppHandle) -> Result<(), String> {
+    open_page(app, "").await
+}
+
+/// Opens one dashboard page ("generate", "models/discover"; "" for the overview). The page rides in the
+/// fragment, which the browser keeps through the login redirect and never sends to the host.
+pub async fn open_page(app: AppHandle, page: &str) -> Result<(), String> {
     let host = runtime::ensure_host(&app).await?;
     let now = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|e| e.to_string())?.as_secs();
-    let url = login_url(&host.url, &host.api_key, now + LOGIN_TTL_SECS);
+    let mut url = login_url(&host.url, &host.api_key, now + LOGIN_TTL_SECS);
+    if !page.is_empty() {
+        url = format!("{url}#{page}");
+    }
     app.opener().open_url(url, None::<&str>).map_err(|e| format!("Couldn't open the browser: {e}"))?;
     hide_window(&app);
     Ok(())
@@ -66,50 +72,17 @@ pub fn hide_window(app: &AppHandle) {
 
 /// Opens the dashboard, or the setup window if that fails (not installed yet, or broken).
 pub fn open_dashboard_or_setup(app: &AppHandle) {
+    open_page_or_setup(app, "");
+}
+
+pub fn open_page_or_setup(app: &AppHandle, page: &'static str) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        if let Err(e) = open_dashboard(app.clone()).await {
+        if let Err(e) = open_page(app.clone(), page).await {
             eprintln!("dashboard: {e}");
             show_window(&app);
         }
     });
-}
-
-pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
-    let status = MenuItem::with_id(app, "status", "Starting…", false, None::<&str>)?;
-    let menu = Menu::with_items(
-        app,
-        &[
-            &status,
-            &PredefinedMenuItem::separator(app)?,
-            &MenuItem::with_id(app, "open", "Open Dashboard", true, None::<&str>)?,
-            &MenuItem::with_id(app, "setup", "Setup & Cloud Keys…", true, None::<&str>)?,
-            &PredefinedMenuItem::separator(app)?,
-            &MenuItem::with_id(app, "quit", "Quit Glint Studio", true, None::<&str>)?,
-        ],
-    )?;
-    // shortcut: the colour app icon, not a monochrome template icon; draw one if it looks out of
-    // place next to the system icons.
-    let mut tray = TrayIconBuilder::with_id("main").tooltip("Glint Studio").menu(&menu).show_menu_on_left_click(true);
-    if let Some(icon) = app.default_window_icon() {
-        tray = tray.icon(icon.clone());
-    }
-    tray.on_menu_event(|app, event| match event.id.as_ref() {
-        "open" => open_dashboard_or_setup(app),
-        "setup" => show_window(app),
-        "quit" => app.exit(0),
-        _ => {}
-    })
-    .build(app)?;
-
-    let app = app.clone();
-    thread::spawn(move || {
-        loop {
-            let _ = status.set_text(app.state::<Runtime>().status_line());
-            thread::sleep(Duration::from_secs(3));
-        }
-    });
-    Ok(())
 }
 
 #[cfg(test)]

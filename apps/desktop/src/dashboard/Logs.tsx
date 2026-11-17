@@ -8,25 +8,36 @@ const FILES: Record<LogFile, string> = { host: "Host", comfyui: "Engine", tunnel
 const RANK: Record<Level, number> = { debug: 0, info: 1, warning: 2, error: 3 };
 const SHOW: [Level, string][] = [["debug", "All"], ["info", "Info"], ["warning", "Warnings"], ["error", "Errors"]];
 const BADGE: Record<Level, string> = { debug: "Debug", info: "Info", warning: "Warn", error: "Error" };
+const COUNTS = [500, 1000, 2000, 5000];
+const EVERY: [number, string][] = [[0, "Off"], [2, "2 s"], [5, "5 s"], [10, "10 s"]];
 
-// uvicorn writes "INFO:     msg", cloudflared "2026-11-16T15:34:47Z INF msg"; ComfyUI mostly plain prints.
-const LEVEL = /^(DEBUG|INFO|WARNING|ERROR|CRITICAL):|^\S+Z (DBG|INF|WRN|ERR|FTL) /;
+// ComfyUI colors its level words; the colors would show as junk.
+const ANSI = /\x1b\[[0-9;]*m/g;
+// "2026-11-16T15:34:47Z", "2026-11-16 15:34:47,123" or "[2026-11-16 15:34:47.123]" at the start of a line.
+const TIME = /^\[?(\d{4}-\d\d-\d\d[T ][\d:.,]+Z?)\]?\s+/;
+// Python's "LEVEL:module:msg" (uvicorn's "INFO:     msg" has no module), ComfyUI's "[INFO] msg", and
+// cloudflared's "INF msg" after its time.
+const LEVEL = /^(?:(DEBUG|INFO|WARNING|ERROR|CRITICAL):(?:([\w.]+):)?|\[(DEBUG|INFO|WARNING|ERROR|CRITICAL)\]|(DBG|INF|WRN|ERR|FTL)\b)\s*/;
 const WORD: Record<string, Level> = {
   DEBUG: "debug", DBG: "debug", INFO: "info", INF: "info", WARNING: "warning", WRN: "warning",
   ERROR: "error", ERR: "error", CRITICAL: "error", FTL: "error",
 };
 
-/** Each line's level, and its text without the level word the badge now shows. A line without a level
- * (a traceback's body, a wrapped message) keeps the one before it. */
-function levels(lines: string[]): { text: string; body: string; level: Level; own: boolean }[] {
+type Row = { text: string; time: string; module: string; message: string; level: Level; own: boolean };
+
+/** Splits each line into time, level, module and message; a part it can't find stays blank and the rest is
+ * the message. A line without a level (a traceback's body, a wrapped message) keeps the one before it. */
+function parse(lines: string[]): Row[] {
   let last: Level = "info";
-  return lines.map((text) => {
-    const m = LEVEL.exec(text);
-    const own = !!m || text.startsWith("Traceback ");
-    if (own) last = m ? WORD[m[1] ?? m[2]] : "error";
-    const rest = m ? text.slice(m[0].length) : text;
-    const body = !m ? text : m[1] ? rest.trimStart() : `${m[0].split(" ")[0]} ${rest}`;
-    return { text, body, level: last, own };
+  return lines.map((raw) => {
+    const text = raw.replace(ANSI, "");
+    const t = TIME.exec(text);
+    const rest = t ? text.slice(t[0].length) : text;
+    const m = LEVEL.exec(rest);
+    const word = m && (m[1] ?? m[3] ?? (t ? m[4] : undefined)); // a bare "ERR" without a time is just text
+    const own = !!word || text.startsWith("Traceback ");
+    if (own) last = word ? WORD[word] : "error";
+    return { text, time: t?.[1] ?? "", module: (word && m[2]) || "", message: word ? rest.slice(m[0].length) : rest, level: last, own };
   });
 }
 
@@ -34,56 +45,88 @@ export default function Logs() {
   const [file, setFile] = useState<LogFile>("host");
   const [files, setFiles] = useState<LogFile[]>([]);
   const [lines, setLines] = useState<string[] | null>(null);
+  const [total, setTotal] = useState(0);
+  const [count, setCount] = useState(2000);
+  const [every, setEvery] = useState(2);
+  const [view, setView] = useState<"table" | "raw">("table");
   const [min, setMin] = useState<Level>("debug");
   const [find, setFind] = useState("");
-  const [live, setLive] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const box = useRef<HTMLDivElement>(null);
   const atEnd = useRef(true);
 
   useEffect(() => {
-    setLines(null);
-    atEnd.current = true;
+    let on = true; // a reply for the file or count just left never lands
     const load = () =>
-      api<{ files: LogFile[]; lines: string[] }>(`/api/v1/logs?file=${file}&lines=2000`).then(
+      api<{ files: LogFile[]; lines: string[]; total: number }>(`/api/v1/logs?file=${file}&lines=${count}`).then(
         (r) => {
+          if (!on) return;
           setFiles(r.files);
-          setLines(r.lines);
+          setTotal(r.total);
+          // Same lines: keep the old array so 5000 rows aren't drawn again every refresh.
+          setLines((old) => (old && old.length === r.lines.length && old.every((x, i) => x === r.lines[i]) ? old : r.lines));
           setError(null);
         },
-        (e) => setError(e.message),
+        (e) => on && setError(e.message),
       );
     load();
-    if (!live) return;
-    const timer = setInterval(load, 2000);
-    return () => clearInterval(timer);
-  }, [file, live]);
+    const timer = every ? setInterval(load, every * 1000) : undefined;
+    return () => {
+      on = false;
+      clearInterval(timer);
+    };
+  }, [file, count, every]);
+
+  const pick = (f: LogFile) => {
+    setFile(f);
+    setLines(null);
+    atEnd.current = true;
+  };
 
   const shown = useMemo(() => {
     const q = find.trim().toLowerCase();
-    return levels(lines ?? []).filter((l) => RANK[l.level] >= RANK[min] && (!q || l.text.toLowerCase().includes(q)));
+    return parse(lines ?? []).filter((l) => RANK[l.level] >= RANK[min] && (!q || l.text.toLowerCase().includes(q)));
   }, [lines, min, find]);
 
   // Follow new lines while scrolled to the end; stay put while reading further up.
   useLayoutEffect(() => {
     const el = box.current;
     if (el && atEnd.current) el.scrollTop = el.scrollHeight;
-  }, [shown]);
+  }, [shown, view]);
 
   const tabs = (Object.keys(FILES) as LogFile[]).filter((f) => f === file || files.includes(f));
 
   return (
     <>
       <PageHeader title="Logs" lead="What this host, the engine and the public link are doing, newest at the bottom">
-        <label className="toggle">
-          <input type="checkbox" role="switch" className="switch" checked={live} onChange={(e) => setLive(e.target.checked)} />
-          {live ? "Live" : "Paused"}
-        </label>
+        <div className="usage-filters">
+          <label className="inline-field">
+            Lines
+            <select value={count} onChange={(e) => setCount(Number(e.target.value))}>
+              {COUNTS.map((n) => (
+                <option key={n} value={n}>
+                  {n.toLocaleString()}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="inline-field">
+            Refresh
+            <select value={every} onChange={(e) => setEvery(Number(e.target.value))}>
+              {EVERY.map(([s, text]) => (
+                <option key={s} value={s}>
+                  {text}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
       </PageHeader>
       <section className="card logs" aria-label="Log">
         <div className="logs-bar">
-          {tabs.length > 1 && <Tabs label="Log file" value={file} onChange={setFile} options={tabs.map((f) => [f, FILES[f]])} />}
+          {tabs.length > 1 && <Tabs label="Log file" value={file} onChange={pick} options={tabs.map((f) => [f, FILES[f]])} />}
           <Tabs label="Show" value={min} onChange={setMin} options={SHOW} />
+          <Tabs label="View" value={view} onChange={setView} options={[["table", "Table"], ["raw", "Raw"]]} />
           <input type="search" aria-label="Filter lines" placeholder="Filter" value={find} onChange={(e) => setFind(e.target.value)} />
           <CopyButton text={shown.map((l) => l.text).join("\n")} label="shown lines" />
         </div>
@@ -103,17 +146,33 @@ export default function Logs() {
             !error && <p className="empty">Loading…</p>
           ) : shown.length === 0 ? (
             <p className="empty">{lines.length ? "No lines match." : "Nothing logged yet."}</p>
+          ) : view === "raw" ? (
+            <pre>{shown.map((l) => l.text).join("\n")}</pre>
           ) : (
-            shown.map((l, i) => (
-              <div key={i} className={`line ${l.level}`}>
-                <span className="lvl">{l.own ? BADGE[l.level] : ""}</span>
-                <code>{l.body}</code>
-              </div>
-            ))
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col">Time</th>
+                  <th scope="col">Level</th>
+                  <th scope="col">Module</th>
+                  <th scope="col">Message</th>
+                </tr>
+              </thead>
+              <tbody>
+                {shown.map((l, i) => (
+                  <tr key={i} className={`line ${l.level}`}>
+                    <td className="time">{l.time}</td>
+                    <td className="lvl">{l.own ? BADGE[l.level] : ""}</td>
+                    <td className="mod">{l.module}</td>
+                    <td className="msg">{l.message}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           )}
         </div>
         <p className="count" aria-live="off">
-          {lines && `${shown.length} of ${lines.length} lines`}
+          {lines && `Showing ${shown.length.toLocaleString()} of ${total.toLocaleString()} lines`}
         </p>
       </section>
     </>

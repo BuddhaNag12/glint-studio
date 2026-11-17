@@ -1,9 +1,10 @@
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, KeyboardEvent, useEffect, useState } from "react";
 import { api, gb, Hardware, System } from "./api";
-import { Alert, Fit, FitGauge, FitLabel, Icon, PageHeader, Progress, Tabs } from "./ui";
+import { Alert, Fit, FitGauge, FitLabel, Icon, Modal, PageHeader, Progress, Tabs } from "./ui";
 
-// Mirror recommend_one() and Downloads.view() in host/app/local_models.py.
+// Mirror recommend_one(), add_tiers(), memory_split() and Downloads.view() in host/app/local_models.py.
 type Download = { status: "downloading" | "done" | "failed" | "cancelled"; done: number; total: number; verifying: boolean; error: string | null };
+type Tier = "best" | "better" | "faster" | "other";
 type LocalModel = {
   id: string;
   name: string;
@@ -14,20 +15,36 @@ type LocalModel = {
   min_vram_gb: number;
   bytes: number;
   installed: boolean;
+  tier: Tier;
+  speed_note: string | null;
+  s_per_image: number | null; // measured by a benchmark run
   download: Download | null;
 };
+type Memory = { unified: boolean; total_gb: number; models_gb: number; headroom_gb: number; system_gb: number };
+
+const TIERS: [Tier, string, string][] = [
+  ["best", "Best for this computer", "Runs well here, best quality first"],
+  ["better", "Better quality, slower", "Too big to run fully on the GPU, so each image takes longer"],
+  ["faster", "Faster, lighter", "Quicker images, a step down in quality"],
+  ["other", "Other models", "Too slow or too big for this computer"],
+];
 
 /** `tab` comes from the address (#models/installed), so the header menu can open either view. */
 export default function Models({ tab, system }: { tab: "discover" | "installed"; system: System | null }) {
   const [models, setModels] = useState<LocalModel[] | null>(null);
   const [hw, setHw] = useState<Hardware | null>(null);
+  const [memory, setMemory] = useState<Memory | null>(null);
+  const [unlock, setUnlock] = useState<string[]>([]);
+  const [editing, setEditing] = useState<LocalModel | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const refresh = () =>
-    api<{ hardware: Hardware; models: LocalModel[] }>("/api/v1/local-models").then(
+    api<{ hardware: Hardware; models: LocalModel[]; memory: Memory; unlock: string[] }>("/api/v1/local-models").then(
       (r) => {
         setModels(r.models);
         setHw(r.hardware);
+        setMemory(r.memory);
+        setUnlock(r.unlock);
         setError(null);
       },
       (e) => setError(e.message),
@@ -48,17 +65,15 @@ export default function Models({ tab, system }: { tab: "discover" | "installed";
     api(`/api/v1/local-models/${id}/download`, { method }).then(refresh, (e) => setError(e.message));
 
   const installed = models?.filter((m) => m.installed) ?? [];
-  const shown = tab === "installed" ? installed : models ?? [];
   // The gauge needs a GPU budget to measure against; on CPU it would only say "everything is slow".
-  const gauge = hw && hw.backend !== "cpu" && hw.vram_budget_gb > 0;
+  const budget = hw && hw.backend !== "cpu" && hw.vram_budget_gb > 0 ? hw.vram_budget_gb : 0;
   const d = active?.download;
+  const row = (m: LocalModel) => <ModelRow key={m.id} m={m} budget={budget} busy={busy} act={act} onSettings={() => setEditing(m)} />;
+  const unlockNames = models?.filter((m) => unlock.includes(m.id)).map((m) => m.name) ?? [];
 
   return (
     <>
-      <PageHeader
-        title="Models"
-        lead="Image models picked to fit this computer"
-      >
+      <PageHeader title="Models" lead="Image models picked to fit this computer">
         <Tabs
           label="Show"
           value={tab}
@@ -71,7 +86,7 @@ export default function Models({ tab, system }: { tab: "discover" | "installed";
       </PageHeader>
 
       {error && <Alert>{error}</Alert>}
-      {hw && <ThisComputer hw={hw} system={system} />}
+      {hw && memory && <ThisComputer hw={hw} memory={memory} system={system} />}
       <EngineCard system={system} models={installed} onFolders={refresh} />
 
       {active && d && (
@@ -90,81 +105,251 @@ export default function Models({ tab, system }: { tab: "discover" | "installed";
         </div>
       )}
 
-      <section className="card list-card" aria-labelledby="list-title">
-        <div className="card-head">
-          <h2 id="list-title">{tab === "installed" ? "On this computer" : "Recommended for you"}</h2>
-          <span className="cap">Downloads resume if they stop, and every file is checked</span>
-        </div>
-        {models === null && !error && <p className="model-row muted">Checking what fits…</p>}
-        {models && shown.length === 0 && (
-          <p className="model-row muted">{tab === "installed" ? "Nothing installed yet. Pick one from Discover." : "The catalog has no local models."}</p>
-        )}
-        {shown.map((m) => {
-          const dl = m.download;
-          return (
-            <div key={m.id} className={m.fit === "wont_fit" && !m.installed ? "model-row off" : "model-row"}>
-              <div>
-                <div className="model-name">
-                  <strong>{m.name}</strong>
-                  <span className="tag">{m.precision}</span>
-                  {m.license && (
-                    <span className="tag" title={m.license.name}>
-                      {m.license.commercial_ok ? "Commercial use ok" : "Non-commercial"}
-                    </span>
-                  )}
-                </div>
-                <span className="muted small num">
-                  {m.reason} · {gb(m.bytes)}
-                </span>
-                {dl?.status === "failed" && dl.error && <span className="error small">{dl.error}</span>}
-              </div>
-              <div className="fit">
-                {gauge && <FitGauge fit={m.fit} need={m.min_vram_gb} budget={hw.vram_budget_gb} />}
-                <FitLabel fit={m.fit}>{gauge && ` · needs ${m.min_vram_gb.toFixed(1)} of ${hw.vram_budget_gb.toFixed(1)} GB`}</FitLabel>
-              </div>
-              <div>
-                {m.installed ? (
-                  <span className="status">
-                    <Icon name="check" size={14} />
-                    Installed
-                  </span>
-                ) : dl?.status === "downloading" ? (
-                  <span className="status quiet num">
-                    {dl.total ? Math.round((dl.done / dl.total) * 100) : 0}%
-                    <button className="icon" aria-label={`Cancel ${m.name} download`} onClick={() => act(m.id, "DELETE")}>
-                      <Icon name="x" />
-                    </button>
-                  </span>
-                ) : (
-                  <button className="small" onClick={() => act(m.id, "POST")} disabled={busy || m.fit === "wont_fit"}>
-                    <Icon name="download" size={16} />
-                    {dl?.status === "failed" || dl?.status === "cancelled" ? "Resume" : "Download"}
-                  </button>
-                )}
-              </div>
-            </div>
-          );
-        })}
-      </section>
+      {tab === "installed" || !models?.length ? (
+        <section className="card list-card" aria-labelledby="list-title">
+          <div className="card-head">
+            <h2 id="list-title">{tab === "installed" ? "On this computer" : "Recommended for you"}</h2>
+            <span className="cap">Downloads resume if they stop, and every file is checked</span>
+          </div>
+          {models === null && !error && <p className="model-row muted">Checking what fits…</p>}
+          {models && (tab === "installed" ? installed : models).length === 0 && (
+            <p className="model-row muted">{tab === "installed" ? "Nothing installed yet. Pick one from Discover." : "The catalog has no local models."}</p>
+          )}
+          {tab === "installed" && installed.map(row)}
+        </section>
+      ) : (
+        <>
+          {TIERS.map(([tier, title, cap]) => {
+            const rows = models.filter((m) => m.tier === tier);
+            return (
+              rows.length > 0 && (
+                <section key={tier} className="card list-card" aria-labelledby={`tier-${tier}`}>
+                  <div className="card-head">
+                    <h2 id={`tier-${tier}`}>{title}</h2>
+                    <span className="cap">{cap}</span>
+                  </div>
+                  {rows.map(row)}
+                </section>
+              )
+            );
+          })}
+          {unlockNames.length > 0 && (
+            <section className="card">
+              <details className="more">
+                <summary>
+                  Unlock bigger models
+                  <Icon name="chevron" size={16} />
+                </summary>
+                <p className="muted small">
+                  {unlockNames.join(", ")} would run fully on the GPU if models could use more memory. Raise the memory guard in{" "}
+                  <a href="#settings/engine">Settings → Engine</a>. Less memory is then left for other apps.
+                </p>
+              </details>
+            </section>
+          )}
+        </>
+      )}
+      {editing && <ModelSettings model={editing} onClose={() => setEditing(null)} />}
     </>
   );
 }
 
+function ModelRow({
+  m,
+  budget,
+  busy,
+  act,
+  onSettings,
+}: {
+  m: LocalModel;
+  budget: number;
+  busy: boolean;
+  act: (id: string, method: "POST" | "DELETE") => void;
+  onSettings: () => void;
+}) {
+  const dl = m.download;
+  return (
+    <div className={m.fit === "wont_fit" && !m.installed ? "model-row off" : "model-row"}>
+      <div>
+        <div className="model-name">
+          <strong>{m.name}</strong>
+          <span className="tag">{m.precision}</span>
+          {m.license && (
+            <span className="tag" title={m.license.name}>
+              {m.license.commercial_ok ? "Commercial use ok" : "Non-commercial"}
+            </span>
+          )}
+        </div>
+        <span className="muted small num">
+          {m.reason} · {gb(m.bytes)}
+        </span>
+        {(m.speed_note || m.s_per_image) && (
+          <span className="muted small num">
+            {[m.speed_note, m.s_per_image && `${m.s_per_image.toFixed(1)} s per image, measured`].filter(Boolean).join(" · ")}
+          </span>
+        )}
+        {dl?.status === "failed" && dl.error && <span className="error small">{dl.error}</span>}
+      </div>
+      <div className="fit">
+        {budget > 0 && <FitGauge fit={m.fit} need={m.min_vram_gb} budget={budget} />}
+        <FitLabel fit={m.fit}>{budget > 0 && ` · needs ${m.min_vram_gb.toFixed(1)} of ${budget.toFixed(1)} GB`}</FitLabel>
+      </div>
+      <div>
+        {m.installed ? (
+          <>
+            <span className="status">
+              <Icon name="check" size={14} />
+              Installed
+            </span>
+            <button className="ghost small" onClick={onSettings} aria-label={`${m.name} settings`}>
+              <Icon name="sliders" size={16} />
+              Settings
+            </button>
+          </>
+        ) : dl?.status === "downloading" ? (
+          <span className="status quiet num">
+            {dl.total ? Math.round((dl.done / dl.total) * 100) : 0}%
+            <button className="icon" aria-label={`Cancel ${m.name} download`} onClick={() => act(m.id, "DELETE")}>
+              <Icon name="x" />
+            </button>
+          </span>
+        ) : (
+          <button className="small" onClick={() => act(m.id, "POST")} disabled={busy || m.fit === "wont_fit"}>
+            <Icon name="download" size={16} />
+            {dl?.status === "failed" || dl?.status === "cancelled" ? "Resume" : "Download"}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Mirrors ModelSettings in host/app/catalog.py and _view() in host/app/model_settings.py.
+type Values = { width?: number; height?: number; steps?: number; cfg?: number; negative?: string };
+type SettingsView = {
+  settings: Values;
+  defaults: { width: number; height: number; steps: number | null; cfg: number | null; negative: string };
+  limits: { steps: [number, number] | null; cfg: [number, number] | null; multiple_of: number; min_side: number; supports_negative: boolean };
+};
+const FIELDS = ["width", "height", "steps", "cfg", "negative"] as const;
+
+/** The user's own defaults for one model; a request, style or quality choice still wins. */
+function ModelSettings({ model, onClose }: { model: LocalModel; onClose: () => void }) {
+  const [view, setView] = useState<SettingsView | null>(null);
+  const [draft, setDraft] = useState<Record<(typeof FIELDS)[number], string>>({ width: "", height: "", steps: "", cfg: "", negative: "" });
+  const [error, setError] = useState<string | null>(null);
+  const url = `/api/v1/models/${model.id}/settings`;
+
+  const load = (v: SettingsView) => {
+    setView(v);
+    setDraft(Object.fromEntries(FIELDS.map((f) => [f, String(v.settings[f] ?? "")])) as typeof draft);
+  };
+  useEffect(() => {
+    api<SettingsView>(url).then(load, (e) => setError(e.message));
+  }, [url]);
+
+  const put = (body: Values) =>
+    api<SettingsView>(url, { method: "PUT", body: JSON.stringify(body) }).then(
+      (v) => (load(v), setError(null), true),
+      (e) => (setError(e.message), false),
+    );
+  const save = () => {
+    const body: Values = {};
+    for (const f of FIELDS) {
+      const v = draft[f].trim();
+      if (v) (body as Record<string, string | number>)[f] = f === "negative" ? v : Number(v);
+    }
+    put(body).then((ok) => ok && onClose());
+  };
+  // Enter would submit the dialog's form, which closes it without saving.
+  const enter = (e: KeyboardEvent) => {
+    if (e.key === "Enter" && !(e.target instanceof HTMLTextAreaElement)) {
+      e.preventDefault();
+      save();
+    }
+  };
+  const field = (f: (typeof FIELDS)[number]) => ({
+    value: draft[f],
+    onChange: (e: { target: { value: string } }) => setDraft({ ...draft, [f]: e.target.value }),
+  });
+  const lim = view?.limits;
+  const def = view?.defaults;
+
+  return (
+    <Modal title={`${model.name} settings`} onClose={onClose}>
+      <p className="small">Used when an image doesn't ask for something else. Leave a field empty for the model's default.</p>
+      {view && lim && def && (
+        <div className="form" onKeyDown={enter}>
+          <div className="size-pair">
+            <label>
+              Width
+              <input type="number" inputMode="numeric" min={lim.min_side} step={lim.multiple_of} placeholder={String(def.width)} {...field("width")} />
+            </label>
+            <label>
+              Height
+              <input type="number" inputMode="numeric" min={lim.min_side} step={lim.multiple_of} placeholder={String(def.height)} {...field("height")} />
+            </label>
+          </div>
+          <span className="help">Both or neither, in multiples of {lim.multiple_of}.</span>
+          {lim.steps && (
+            <label>
+              Steps
+              <input type="number" inputMode="numeric" min={lim.steps[0]} max={lim.steps[1]} placeholder={String(def.steps ?? "")} {...field("steps")} />
+              <span className="help">
+                {lim.steps[0]} to {lim.steps[1]}. More steps: more detail, slower.
+              </span>
+            </label>
+          )}
+          {lim.cfg && (
+            <label>
+              CFG
+              <input type="number" inputMode="decimal" min={lim.cfg[0]} max={lim.cfg[1]} step={0.1} placeholder={String(def.cfg ?? "")} {...field("cfg")} />
+              <span className="help">
+                {lim.cfg[0]} to {lim.cfg[1]}. How closely it follows the prompt.
+              </span>
+            </label>
+          )}
+          {lim.supports_negative && (
+            <label>
+              Negative prompt
+              <textarea rows={2} maxLength={4000} placeholder={def.negative} {...field("negative")} />
+            </label>
+          )}
+        </div>
+      )}
+      {error && <Alert>{error}</Alert>}
+      <div className="actions">
+        <button type="button" className="ghost" disabled={!view} onClick={() => put({})}>
+          Reset to defaults
+        </button>
+        <button value="cancel">Cancel</button>
+        <button type="button" className="primary" disabled={!view} onClick={save}>
+          Save
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
 /** What this computer can give models: the card at the top of Models. */
-function ThisComputer({ hw, system }: { hw: Hardware; system: System | null }) {
+function ThisComputer({ hw, memory, system }: { hw: Hardware; memory: Memory; system: System | null }) {
   const gpu = hw.gpus?.[0];
-  const unified = hw.backend === "mps";
-  // Apple Silicon shares one pool with macOS; elsewhere the budget comes out of the GPU's own memory.
-  const total = unified ? hw.ram_gb : (gpu?.vram_gb ?? 0);
-  const budget = Math.min(hw.vram_budget_gb, total);
-  const bar = hw.backend !== "cpu" && budget > 0;
-  const rest = unified ? "macOS and other apps" : "Kept free";
-  const sub =
-    hw.backend === "cpu"
-      ? `${hw.ram_gb.toFixed(0)} GB memory · no supported GPU, so images run on the processor`
-      : unified
-        ? `${hw.ram_gb.toFixed(0)} GB unified memory · runs on Metal (MPS)`
-        : `${gpu?.vram_gb ? `${gpu.vram_gb.toFixed(0)} GB graphics memory · ` : ""}${hw.ram_gb.toFixed(0)} GB system memory`;
+  const { total_gb: total, models_gb: models, headroom_gb: headroom, system_gb: other } = memory;
+  const kind = memory.unified ? (hw.backend === "mps" ? "unified memory" : "memory") : "graphics memory";
+  const sub = [
+    total > 0 && `${total.toFixed(0)} GB ${kind}`,
+    hw.gpu_cores && `${hw.gpu_cores} GPU cores`,
+    !memory.unified && `${hw.ram_gb.toFixed(0)} GB system memory`,
+    hw.backend === "cpu" ? "no supported GPU, so images run on the processor" : hw.backend === "mps" ? "runs on Metal (MPS)" : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const segments: [string, string, number][] = [
+    ["on", "Memory for models", models],
+    ["mid", "Safety headroom", headroom],
+    ["", memory.unified ? "OS + other apps" : "Kept free", other],
+  ];
+  const shown = segments.filter(([, , gbs]) => gbs > 0.05);
   const devices = system?.engine.up ? system.engine.devices : [];
 
   return (
@@ -183,29 +368,26 @@ function ThisComputer({ hw, system }: { hw: Hardware; system: System | null }) {
         <div className="hw-budget">
           <span className="hw-label">Memory for models</span>
           <span className="figure num">
-            {hw.vram_budget_gb.toFixed(1)}
+            {models.toFixed(1)}
             <small> GB</small>
           </span>
         </div>
       </div>
 
-      {bar && (
+      {total > 0 && models > 0 && (
         <div>
-          <div className="stackbar" role="img" aria-label={`${budget.toFixed(1)} of ${total.toFixed(1)} GB for models, ${(total - budget).toFixed(1)} GB ${rest.toLowerCase()}`}>
-            <span className="seg on" style={{ flexGrow: budget }} />
-            {total > budget && <span className="seg" style={{ flexGrow: total - budget }} />}
+          <div className="stackbar" role="img" aria-label={shown.map(([, label, gbs]) => `${label} ${gbs.toFixed(1)} GB`).join(", ")}>
+            {shown.map(([cls, label, gbs]) => (
+              <span key={label} className={`seg ${cls}`} style={{ flexGrow: gbs }} />
+            ))}
           </div>
           <ul className="legend num">
-            <li>
-              <span className="key on" aria-hidden="true" />
-              For models <strong>{budget.toFixed(1)} GB</strong>
-            </li>
-            {total > budget && (
-              <li>
-                <span className="key" aria-hidden="true" />
-                {rest} <strong>{(total - budget).toFixed(1)} GB</strong>
+            {shown.map(([cls, label, gbs]) => (
+              <li key={label}>
+                <span className={`key ${cls}`} aria-hidden="true" />
+                {label} <strong>{gbs.toFixed(1)} GB</strong>
               </li>
-            )}
+            ))}
           </ul>
         </div>
       )}
@@ -221,7 +403,7 @@ function ThisComputer({ hw, system }: { hw: Hardware; system: System | null }) {
       <div className="hw-foot">
         <span className="tag">Runs on {hw.backend.toUpperCase()}</span>
         {system && <span className="tag num">Models folder {gb(system.models_bytes)}</span>}
-        <span className="tag num">Free disk {hw.disk_free_gb.toFixed(0)} GB</span>
+        <span className="tag num">Free in models folder {hw.disk_free_gb.toFixed(0)} GB</span>
         <span className="cap">Estimates. Real speed depends on image size and steps.</span>
       </div>
       {hw.warnings?.map((w) => (

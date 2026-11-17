@@ -1,4 +1,4 @@
-"""Keeps a model in memory: loads one when the engine starts, unloads it on request.
+"""Keeps a model in memory: loads one when the engine starts, unloads it on request or after it sits idle.
 
 ComfyUI loads a model on the first prompt that needs it (a minute or two for a large one) and keeps
 it until told to free it. Loading = a tiny warm-up prompt run outside the job queue.
@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -31,16 +32,23 @@ class Engine:
         roots: Callable[[], list[Path]],
         preload: Callable[[], bool],
         default_model: str,
+        idle_minutes: Callable[[str], float] = lambda _model: 0,
+        busy: Callable[[], bool] = lambda: False,
     ) -> None:
         self.provider = provider
         self.models = models
         self.roots = roots  # the models folder and the linked ones, read when needed
         self.preload = preload
         self.default_model = default_model
+        self.idle_minutes = idle_minutes  # 0 = never; read every tick so a change applies at once
+        self.busy = busy  # jobs queued or running: never unload under them
         self.status = "idle"  # idle | loading | loaded | failed
         self.model: str | None = None
         self.error: str | None = None
         self._task: asyncio.Task | None = None
+        self.last_used = time.monotonic()
+        self.started = time.time()  # the host
+        self.up_since: float | None = None  # the engine, unix seconds; None while it's down
 
     def view(self) -> dict:
         return {"status": self.status, "model": self.model, "error": self.error}
@@ -69,7 +77,7 @@ class Engine:
         request = ProviderRequest(model, ComposedPrompt("a plain grey square", None, False), ResolvedParams(256, 256, 1, cfg, 1), seed=0)
         try:
             await self.provider.generate(request)
-            self.status = "loaded"
+            self.status, self.last_used = "loaded", time.monotonic()
         except ApiError as exc:
             logger.warning("Loading %s failed: %s", model.id, exc.message)
             self.status, self.error = "failed", exc.message
@@ -87,6 +95,17 @@ class Engine:
         """A finished job leaves its model in memory."""
         if job.status == "done" and self._local(job.model):
             self.status, self.model, self.error = "loaded", job.model, None
+            self.last_used = time.monotonic()
+
+    def idle_due(self) -> bool:
+        """A loaded model nobody has used for its idle limit; a job in the queue counts as use."""
+        if self.status != "loaded" or not self.model:
+            return False
+        if self.busy():
+            self.last_used = time.monotonic()
+            return False
+        minutes = self.idle_minutes(self.model)
+        return minutes > 0 and time.monotonic() - self.last_used >= minutes * 60
 
     def reset(self) -> None:
         """The engine (re)started: nothing is in memory."""
@@ -105,11 +124,20 @@ class Engine:
                 now = False
             if now and not up:
                 self.reset()
+                self.up_since = time.time()
                 if self.preload():
                     try:
                         self.load()
                     except ApiError:
                         pass  # nothing downloaded yet
+            elif now and self.idle_due():
+                logger.info("Unloading %s: idle for its limit", self.model)
+                try:
+                    await self.unload()
+                except ApiError:
+                    pass  # went down this moment; the next start begins empty anyway
+            if not now:
+                self.up_since = None
             up = now
             await asyncio.sleep(interval)
 

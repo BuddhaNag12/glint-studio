@@ -11,7 +11,7 @@ from pathlib import Path
 import httpx
 from fastapi.testclient import TestClient
 
-from app.catalog import CatalogModel, ModelFile, Variant, load_catalog
+from app.catalog import CatalogModel, Defaults, Limits, ModelFile, Variant, load_catalog
 from app.config import Settings
 from app.dashboard import Sessions, login_signature
 from app.errors import ApiError
@@ -34,8 +34,16 @@ def variant(precision: str, min_vram: float, gb: float) -> Variant:
     return Variant.model_construct(precision=precision, min_vram_gb=min_vram, files=[f])
 
 
-def model(model_id: str, rank: int, variants: list[Variant]) -> CatalogModel:
-    return CatalogModel.model_construct(id=model_id, name=model_id, license=None, quality_rank=rank, variants=variants)
+def model(model_id: str, rank: int, variants: list[Variant], steps: int = 6) -> CatalogModel:
+    return CatalogModel.model_construct(
+        id=model_id,
+        name=model_id,
+        license=None,
+        quality_rank=rank,
+        variants=variants,
+        defaults=Defaults(shape="square", steps=steps),
+        limits=Limits(sizes={"square": (1024, 1024)}),
+    )
 
 
 def zit() -> CatalogModel:
@@ -216,7 +224,7 @@ def test_network_settings_for_the_app(tmp_path: Path) -> None:
     )
     with TestClient(app, client=LOCAL) as client:
         view = client.get("/api/v1/network", headers=AUTH).json()
-        assert view["lan"] == {"on": False, "active": False, "url": None}
+        assert {k: view["lan"][k] for k in ("on", "active", "url")} == {"on": False, "active": False, "url": None}
         assert view["tunnel"] == {"on": False, "status": "off", "url": None, "error": None}
         assert client.get("/api/v1/network").status_code == 401
 
@@ -330,7 +338,7 @@ def test_logs_show_the_end_of_a_known_log_only(tmp_path: Path, monkeypatch) -> N
     app, _, _ = _setup_test_app(tmp_path, logs_dir=logs)
     with TestClient(app, client=LOCAL) as client:
         res = client.get("/api/v1/logs?lines=3", headers=AUTH).json()
-        assert res == {"files": ["host"], "file": "host", "lines": [f"INFO:     line {i}" for i in (97, 98, 99)]}
+        assert res == {"files": ["host"], "file": "host", "lines": [f"INFO:     line {i}" for i in (97, 98, 99)], "total": 100}
         assert client.get("/api/v1/logs?file=comfyui", headers=AUTH).json()["lines"] == []
         assert client.get("/api/v1/logs?file=../secret", headers=AUTH).status_code == 422
         assert client.get("/api/v1/logs").status_code == 401

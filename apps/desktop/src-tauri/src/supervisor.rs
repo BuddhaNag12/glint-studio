@@ -164,6 +164,32 @@ fn http_status(url: &str, timeout: Duration) -> Option<u16> {
     parse_status_line(line)
 }
 
+/// A JSON request to the local host with its API key; None on any failure or a non-2xx status.
+/// shortcut: plain HTTP/1.1 read to the end, which suits the host's small JSON replies (they carry a
+/// Content-Length, never chunked); use an HTTP crate if this ever talks to anything else.
+pub fn http_json(method: &str, url: &str, key: &str, body: Option<&str>) -> Option<serde_json::Value> {
+    let (host, path) = split_http_url(url)?;
+    let timeout = Duration::from_secs(5);
+    let mut stream = TcpStream::connect_timeout(&host.to_socket_addrs().ok()?.next()?, timeout).ok()?;
+    stream.set_read_timeout(Some(timeout)).ok()?;
+    let body = body.unwrap_or("");
+    let request = format!(
+        "{method} {path} HTTP/1.1\r\nHost: {host}\r\nAuthorization: Bearer {key}\r\nContent-Type: application/json\r\n\
+         Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(request.as_bytes()).ok()?;
+    let mut reply = Vec::new();
+    stream.read_to_end(&mut reply).ok()?;
+    let text = String::from_utf8_lossy(&reply);
+    let (head, body) = text.split_once("\r\n\r\n")?;
+    let status = parse_status_line(head.lines().next()?)?;
+    if !(200..300).contains(&status) {
+        return None;
+    }
+    serde_json::from_str(body).ok()
+}
+
 fn spawn(spec: &ProcessSpec) -> io::Result<Child> {
     if let Some(dir) = spec.log_file.parent() {
         fs::create_dir_all(dir)?;
@@ -314,6 +340,14 @@ mod tests {
         assert_eq!(split_http_url("http://127.0.0.1:8000/health"), Some(("127.0.0.1:8000", "/health")));
         assert_eq!(split_http_url("http://127.0.0.1:8000"), Some(("127.0.0.1:8000", "/")));
         assert_eq!(split_http_url("https://127.0.0.1:8000/health"), None);
+    }
+
+    #[test]
+    #[ignore = "needs a host running on 127.0.0.1:7788"]
+    fn http_json_talks_to_a_running_host() {
+        let health = http_json("GET", "http://127.0.0.1:7788/health", "", None).expect("health");
+        assert!(health.is_object());
+        assert_eq!(http_json("GET", "http://127.0.0.1:7788/api/v1/system", "wrong-key", None), None); // 401
     }
 
     #[test]

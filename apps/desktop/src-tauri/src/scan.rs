@@ -45,6 +45,9 @@ pub struct HardwareProfile {
     pub gpus: Vec<Gpu>,
     pub backend: Backend,
     pub vram_budget_gb: f64,
+    /// Apple Silicon only, from `system_profiler`; other GPUs don't report it cheaply.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpu_cores: Option<u32>,
     pub warnings: Vec<String>,
 }
 
@@ -158,6 +161,13 @@ pub fn parse_apple_gpu(memsize: &str, brand: &str) -> Option<Gpu> {
         vram_gb: Some(bytes_to_gb(bytes)),
         driver: None,
     })
+}
+
+/// `system_profiler SPDisplaysDataType`: the "Total Number of Cores: 10" line of an Apple GPU.
+pub fn parse_gpu_cores(out: &str) -> Option<u32> {
+    out.lines()
+        .find_map(|l| l.trim().strip_prefix("Total Number of Cores:"))
+        .and_then(|n| n.trim().parse().ok())
 }
 
 fn vendor_of(name: &str) -> Option<Vendor> {
@@ -363,6 +373,11 @@ pub fn scan() -> HardwareProfile {
     }
 
     let (backend, vram_budget_gb, warnings) = pick_backend(os, arch, &gpus);
+    let gpu_cores = if backend == Backend::Mps {
+        run("system_profiler", &["SPDisplaysDataType"]).and_then(|o| parse_gpu_cores(&o))
+    } else {
+        None
+    };
 
     let sys = System::new_all();
     let cpu = sys
@@ -395,6 +410,7 @@ pub fn scan() -> HardwareProfile {
         gpus,
         backend,
         vram_budget_gb,
+        gpu_cores,
         warnings,
     }
 }
@@ -477,6 +493,13 @@ mod tests {
         let (backend, budget, _) = pick_backend("macos", "aarch64", &[gpu]);
         assert_eq!(backend, Backend::Mps);
         assert!(approx(budget, 38.4));
+    }
+
+    #[test]
+    fn apple_gpu_cores() {
+        let out = "Graphics/Displays:\n\n    Apple M5:\n\n      Chipset Model: Apple M5\n      Total Number of Cores: 10\n";
+        assert_eq!(parse_gpu_cores(out), Some(10));
+        assert_eq!(parse_gpu_cores("garbage"), None);
     }
 
     #[test]

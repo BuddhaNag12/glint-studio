@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import qrcode from "qrcode-generator";
 import { api, ApiKey, Connection, Network } from "./api";
+import Integrations from "./Integrations";
 import { Alert, CopyButton, Icon, Modal, PageHeader, Tabs, useConfirm } from "./ui";
 
 /** Black on white with a quiet zone, whatever the theme: phone cameras read that best. */
@@ -191,6 +192,40 @@ function Keys({ shares }: { shares: Share[] }) {
   );
 }
 
+/** The same host under each name it answers to. The .local name and the network address only reach it while
+ * LAN sharing is on; otherwise it listens on 127.0.0.1 alone. */
+function Address({ conn, net }: { conn: Connection; net: Network | null }) {
+  const [choice, setChoice] = useState("127.0.0.1");
+  const base = new URL(conn.url);
+  const at = (host: string) => `${base.protocol}//${host}${base.port ? `:${base.port}` : ""}`;
+  const lan = net?.lan.active ?? false;
+  const options = [
+    { host: "127.0.0.1", usable: true },
+    { host: "localhost", usable: true },
+    ...(net?.lan.hostname ? [{ host: net.lan.hostname, usable: lan }] : []),
+    ...(net?.lan.ip ? [{ host: net.lan.ip, usable: lan }] : []),
+  ];
+  const picked = options.find((o) => o.host === choice && o.usable) ?? options[0];
+  return (
+    <>
+      <div className="inline-field" style={{ flexWrap: "wrap" }}>
+        <select aria-label="Address to show" value={picked.host} onChange={(e) => setChoice(e.target.value)}>
+          {options.map((o) => (
+            <option key={o.host} value={o.host} disabled={!o.usable}>
+              {o.host}
+              {o.usable ? "" : " (needs network sharing)"}
+            </option>
+          ))}
+        </select>
+        <Copyable text={at(picked.host)} label="address" />
+      </div>
+      {options.some((o) => !o.usable) && (
+        <p className="help">The .local name and network address work once "On your local network" is on, under Share.</p>
+      )}
+    </>
+  );
+}
+
 const TUNNEL_STATUS = { off: "", downloading: "Downloading the tunnel tool…", starting: "Opening the link…", running: "", failed: "" };
 
 export default function Connect({ conn }: { conn: Connection }) {
@@ -225,7 +260,7 @@ export default function Connect({ conn }: { conn: Connection }) {
         <dl className="facts wide">
           <dt>Address</dt>
           <dd>
-            <Copyable text={conn.url} label="address" />
+            <Address conn={conn} net={net} />
           </dd>
           <dt>API key</dt>
           <dd>
@@ -298,6 +333,7 @@ export default function Connect({ conn }: { conn: Connection }) {
           ...(tunnelUrl ? [{ url: tunnelUrl, how: "anywhere" }] : []),
         ]}
       />
+      <Integrations url={url} />
       <TryIt url={url} apiKey={conn.api_key} shown={shown} dots={dots} />
     </>
   );

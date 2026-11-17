@@ -5,7 +5,7 @@ export type Connection = { url: string; api_key: string };
 
 // Mirrors GET /api/v1/network in host/app/dashboard.py. lan.on is what was asked, lan.active what the host does.
 export type Network = {
-  lan: { on: boolean; active: boolean; url: string | null };
+  lan: { on: boolean; active: boolean; url: string | null; ip: string | null; hostname: string | null };
   tunnel: { on: boolean; status: "off" | "downloading" | "starting" | "running" | "failed"; url: string | null; error: string | null };
 };
 
@@ -89,6 +89,12 @@ export type Stats = {
   errors: { code: string; count: number }[];
   models: { model: string; jobs: number; p50_ms: number | null; p95_ms: number | null }[];
   styles: { style: string; count: number }[];
+  previous: { done: number; failed: number } | null; // the same number of days just before; null for a session
+  heatmap: number[][]; // images by weekday (Monday first) x local hour
+  year: { from: number; done: number[] }; // images per local day for 53 weeks from a Monday to today, whatever the range
+  all_models: string[];
+  session_started: number;
+  recording: boolean;
 };
 
 // Mirror the app's scan (scan.rs), plus free disk measured by the host.
@@ -99,6 +105,7 @@ export type Hardware = {
   disk_free_gb: number;
   cpu?: string;
   gpus?: { vendor?: string; name: string; vram_gb?: number | null }[];
+  gpu_cores?: number; // Apple Silicon only
   warnings?: string[];
 };
 

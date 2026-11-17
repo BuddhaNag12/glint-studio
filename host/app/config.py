@@ -56,7 +56,7 @@ class Settings(BaseSettings):
     tunnel_file: Path | None = None  # the app's report on the public link, {"status", "url", "error"}
     logs_dir: Path | None = None  # the app's process logs: host.log, comfyui.log, tunnel.log
     # engine.json, {"preload", "folders"}: the app links the folders into ComfyUI (extra_model_paths.yaml
-    # beside it) and restarts it when they change. Unset: no preload, no linked folders.
+    # beside it) and restarts it when they change. Unset: no linked folders, no preload.
     engine_file: Path | None = None
     keys_file: Path | None = None  # keys.json: extra API keys, hashed; unset keeps them in memory
     serve_on_network: bool = False  # the app started this host on every address, not just 127.0.0.1

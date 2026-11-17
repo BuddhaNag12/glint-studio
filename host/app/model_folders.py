@@ -25,17 +25,31 @@ EXTRA = ["clip_vision", "controlnet", "embeddings", "upscale_models"]  # linked 
 MODEL_SUFFIXES = {".safetensors", ".ckpt", ".pt", ".pth", ".gguf", ".bin", ".sft"}
 
 
-def read_settings(engine_file: Path | None) -> dict:
-    """Preload defaults to on when the app runs the host, off when it runs on its own."""
-    data: dict = {}
+def _raw(engine_file: Path | None) -> dict:
     if engine_file:
         try:
             loaded = json.loads(engine_file.read_text())
-            data = loaded if isinstance(loaded, dict) else {}
+            return loaded if isinstance(loaded, dict) else {}
         except (OSError, ValueError):
             pass
+    return {}
+
+
+def read_settings(engine_file: Path | None) -> dict:
+    """Preload is off until the user turns it on, so starting the server doesn't fill GPU memory."""
+    data = _raw(engine_file)
     folders = [f for f in data.get("folders", []) if isinstance(f, str)]
-    return {"preload": bool(data.get("preload", engine_file is not None)), "folders": folders}
+    return {"preload": bool(data.get("preload", False)), "folders": folders}
+
+
+def get_setting(engine_file: Path | None, key: str, default=None):
+    """Any other engine.json key (features add their own); the caller validates the value."""
+    return _raw(engine_file).get(key, default)
+
+
+def update_settings(engine_file: Path, patch: dict) -> None:
+    """Merge keys into engine.json, keeping every key this call doesn't name."""
+    _write(engine_file, json.dumps({**_raw(engine_file), **patch}))
 
 
 def model_roots(models_dir: Path | None, engine_file: Path | None) -> list[Path]:
@@ -44,8 +58,8 @@ def model_roots(models_dir: Path | None, engine_file: Path | None) -> list[Path]
 
 
 def save_settings(engine_file: Path, preload: bool, folders: list[str]) -> None:
-    """engine.json, then the yaml (removed when no folders are linked). Both written whole."""
-    _write(engine_file, json.dumps({"preload": preload, "folders": folders}))
+    """engine.json (other keys kept), then the yaml (removed when no folders are linked)."""
+    update_settings(engine_file, {"preload": preload, "folders": folders})
     yaml_file = engine_file.with_name("extra_model_paths.yaml")
     if folders:
         _write(yaml_file, extra_model_paths(folders))
