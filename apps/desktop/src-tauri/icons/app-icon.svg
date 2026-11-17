@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- Glint Studio app icon; macOS grid: an 824 tile with a 100 margin. Regenerate with `npx tauri icon`. -->
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="#0f172a"/>
+  <path d="M512 237 Q534 490 787 512 Q534 534 512 787 Q490 534 237 512 Q490 490 512 237Z" fill="#3b82f6"/>
+  <path d="M704 264 Q710 327 773 333 Q710 339 704 402 Q698 339 635 333 Q698 327 704 264Z" fill="#ffffff"/>
+</svg>

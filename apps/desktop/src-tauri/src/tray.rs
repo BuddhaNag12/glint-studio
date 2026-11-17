@@ -57,10 +57,11 @@ pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
             &MenuItem::with_id(app, "quit", "Quit", true, Some("CmdOrCtrl+Q"))?,
         ],
     )?;
-    // shortcut: the colour app icon, not a monochrome template icon; draw one if it looks out of
-    // place next to the system icons.
     let mut builder = TrayIconBuilder::with_id("main").tooltip("Glint Studio").menu(&menu).show_menu_on_left_click(true);
-    if let Some(icon) = app.default_window_icon() {
+    // macOS tints a black template icon to match the menu bar; other taskbars get the colour icon.
+    if cfg!(target_os = "macos") {
+        builder = builder.icon(tauri::include_image!("icons/tray-template.png")).icon_as_template(true);
+    } else if let Some(icon) = app.default_window_icon() {
         builder = builder.icon(icon.clone());
     }
     builder.on_menu_event(|app, event| on_click(app, event.id.as_ref())).build(app)?;

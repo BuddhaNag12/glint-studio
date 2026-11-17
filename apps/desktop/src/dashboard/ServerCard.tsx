@@ -64,8 +64,9 @@ export default function ServerCard({ system }: { system: System | null }) {
               {server?.up_since && status === "running" && ` · up ${uptime(server.up_since)}`}
             </span>
           </div>
-          <span className={`badge ${status === "running" ? "now" : status === "stopped" ? "bad" : ""}`} role="status">
-            {STATUS[status]}
+          <span className={`engine ${status === "stopped" ? "bad" : status === "starting" ? "quiet" : ""}`} role="status">
+            <span className="dot" aria-hidden="true" />
+            <span>{STATUS[status]}</span>
           </span>
         </div>
 
