@@ -258,10 +258,9 @@ dialog.modal .actions { justify-content: flex-end; margin-top: 12px; }
 dialog.modal p { color: var(--text-2); }
 
 /* Brand mark: a graphite square with the safelight dot. */
-.mark { flex: none; width: 22px; height: 22px; border-radius: 6px; background: var(--text-1); display: inline-flex; align-items: center; justify-content: center; }
-.mark::after { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
-.mark.large { width: 28px; height: 28px; border-radius: 8px; }
-.mark.large::after { width: 8px; height: 8px; }
+/* The app icon; 124.3% crops its macOS margin (an 824 tile in 1024) so the tile fills the box. */
+.mark { flex: none; width: 22px; height: 22px; border-radius: 22%; background: url("../src-tauri/icons/app-icon.svg") center / 124.3% no-repeat; }
+.mark.large { width: 28px; height: 28px; }
 
 /* App window pages (setup). */
 .page { max-width: 640px; margin: 0 auto; padding: 32px; display: flex; flex-direction: column; gap: 20px; min-height: 100vh; }
