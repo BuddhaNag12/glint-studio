@@ -38,9 +38,11 @@ class ComfyUIProvider:
         timeout_seconds: float,
         roots: Callable[[], list[Path]] = lambda: [],
         hardware: Callable[[], dict] = lambda: {"backend": "cpu", "vram_budget_gb": 0.0},
+        extra_workflows_dirs: list[Path] = (),
     ) -> None:
         self.client = client
         self.workflows_dir = workflows_dir  # the catalog's workflow templates
+        self.extra_workflows_dirs = [d for d in extra_workflows_dirs if d]  # online catalog, ComfyUI's templates
         self.timeout_seconds = timeout_seconds
         self.roots = roots  # model folders, to find which variant is downloaded
         self.hardware = hardware  # the app's machine scan, to pick the variant that fits
@@ -71,7 +73,10 @@ class ComfyUIProvider:
             seed=request.seed,
         )
         try:
-            workflow, mapping = load_workflow_bundle(self.workflows_dir, request.model.workflow or "")
+            name = request.model.workflow or ""
+            # A built-in template wins over an online one of the same name.
+            here = next((d for d in [self.workflows_dir, *self.extra_workflows_dirs] if (d / f"{name}.json").is_file()), self.workflows_dir)
+            workflow, mapping = load_workflow_bundle(here, name)
             # The best downloaded variant that fits; none downloaded keeps the template's names (ComfyUI then
             # reports model_missing).
             variant = runnable_variant(self.hardware(), request.model, self.roots())

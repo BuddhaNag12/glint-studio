@@ -160,11 +160,11 @@ function Dashboard() {
           {error && <Alert>{error}</Alert>}
           {conn && page === "dashboard" && <Status system={system} />}
           {conn && page === "generate" && <Generate />}
-          {conn && page === "models" && <Models tab={sub === "installed" ? "installed" : "discover"} system={system} />}
+          {conn && page === "models" && <Models tab={sub === "installed" ? "installed" : "discover"} />}
           {conn && page === "connect" && <Connect conn={conn} />}
           {conn && page === "bench" && <Bench />}
           {conn && page === "logs" && <Logs />}
-          {conn && page === "settings" && <Settings sub={sub} />}
+          {conn && page === "settings" && <Settings sub={sub} system={system} />}
         </div>
       </main>
     </>

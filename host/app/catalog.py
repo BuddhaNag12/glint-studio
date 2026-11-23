@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 ID_PATTERN = r"^[a-z0-9][a-z0-9_-]*$"
 Quality = Literal["fast", "standard", "best"]
+Category = Literal["photo", "art", "text"]  # what Discover filters by; "fast" comes from the steps
 
 
 class _Strict(BaseModel):
@@ -84,6 +85,8 @@ class CatalogModel(_Strict):
     id: str = Field(pattern=ID_PATTERN)
     name: str
     family: str = ""
+    description: str = ""  # one sentence for Discover
+    categories: list[Category] = Field(default_factory=list)
     provider: str = "comfyui"
     remote_id: str | None = None  # the provider's own name for the model, when it differs from id
     cloud: bool = False  # runs on someone else's server and may spend the user's credits

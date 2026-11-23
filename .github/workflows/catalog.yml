@@ -1,0 +1,35 @@
+name: Catalog
+
+# Publishes catalog/ as catalog.json on the "catalog" release, so installed apps pick up new models at their
+# next start without a new app version. The app only adds models it doesn't ship; it never replaces its own.
+on:
+  push:
+    branches: [main]
+    paths: ["catalog/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency: catalog
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: host
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv venv --python 3.12
+      - run: uv pip install -e .
+      # The same checks the app runs: a broken entry fails here instead of on people's computers.
+      - run: uv run --no-sync python -m app.catalog_refresh build ../catalog > ../catalog.json
+      - name: Upload to the catalog release
+        run: |
+          gh release view catalog >/dev/null 2>&1 || gh release create catalog --prerelease --latest=false \
+            --title "Model catalog" --notes "Models the app adds at start. Updated on every catalog change; not an app release."
+          gh release upload catalog ../catalog.json --clobber

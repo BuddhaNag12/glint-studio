@@ -1,10 +1,10 @@
 import { FormEvent, KeyboardEvent, useEffect, useState } from "react";
-import { api, gb, Hardware, System } from "./api";
-import { Alert, Fit, FitGauge, FitLabel, Icon, Modal, PageHeader, Progress, Tabs, useConfirm } from "./ui";
+import { api, gb, Hardware } from "./api";
+import { Alert, Fit, FitGauge, FitLabel, Icon, IconName, Modal, PageHeader, Progress, Tabs, useConfirm } from "./ui";
 
 // Mirror recommend_one(), add_tiers(), memory_split() and Downloads.view() in host/app/local_models.py.
 type Download = { status: "downloading" | "done" | "failed" | "cancelled"; done: number; total: number; verifying: boolean; error: string | null };
-type Tier = "best" | "better" | "faster" | "other";
+type Tier = "best" | "better" | "faster" | "other" | "comfyui";
 type LocalModel = {
   id: string;
   name: string;
@@ -18,24 +18,56 @@ type LocalModel = {
   tier: Tier;
   speed_note: string | null;
   s_per_image: number | null; // measured by a benchmark run
+  cost: number; // speed_cost(): only the ratio between two models means anything
   download: Download | null;
+  description: string;
+  categories: Category[];
+  abilities: { steps: number | null; negative: boolean; seed: boolean; custom_size: boolean; max_pixels: number | null };
 };
+type Category = "photo" | "art" | "text";
 type Memory = { unified: boolean; total_gb: number; models_gb: number; headroom_gb: number; system_gb: number };
 
-const TIERS: [Tier, string, string][] = [
-  ["best", "Best for this computer", "Runs well here, best quality first"],
-  ["better", "Better quality, slower", "Too big to run fully on the GPU, so each image takes longer"],
-  ["faster", "Faster, lighter", "Quicker images, a step down in quality"],
-  ["other", "Other models", "Too slow or too big for this computer"],
+type Section = [Tier, string, string, IconName];
+const TIERS: Section[] = [
+  ["best", "Best for this computer", "Tested in Glint Studio. Runs well here, best quality first", "star"],
+  ["better", "Better quality, slower", "Too big to run fully on the GPU, so each image takes longer", "bulb"],
+  ["faster", "Faster, lighter", "Quicker images, a step down in quality", "bolt"],
+  ["other", "Also runs here", "Slower than the best pick, without better quality", "layers"],
 ];
+// Templates that come with ComfyUI (host/app/comfy_templates.py), below the app's own models.
+const COMFYUI: Section = ["comfyui", "From ComfyUI's templates", "They run here, but aren't tested in Glint Studio yet", "box"];
+const FILTERS = [
+  ["all", "All", "grid"],
+  ["photo", "Photo", "camera"],
+  ["art", "Anime & art", "palette"],
+  ["text", "Text in images", "text"],
+  ["fast", "Few steps", "bolt"],
+] as const satisfies readonly (readonly [string, string, IconName])[];
+type Filter = (typeof FILTERS)[number][0];
+const FAST_STEPS = 8;
+const fast = (m: LocalModel) => m.abilities.steps !== null && m.abilities.steps <= FAST_STEPS;
+const matches = (m: LocalModel, f: Filter) => f === "all" || (f === "fast" ? fast(m) : m.categories.includes(f));
+const runsHere = (m: LocalModel) => m.fit !== "wont_fit" || m.installed;
+const SPEED = ["Slowest", "Slower", "Medium", "Faster", "Fastest"];
+
+/** 1 to 5 by estimated time per image, against the other models that run here. Log scale: costs span
+ * orders of magnitude. A model that spills out of GPU memory is the slowest whatever its size. */
+function speedLevels(models: LocalModel[]): Map<string, number> {
+  const runs = models.filter(runsHere);
+  const logs = runs.map((m) => Math.log(Math.max(m.cost, 1)));
+  const lo = Math.min(...logs);
+  const hi = Math.max(...logs);
+  return new Map(runs.map((m, i) => [m.id, m.fit === "slow" ? 1 : hi - lo < 0.1 ? 3 : 1 + Math.round((4 * (hi - logs[i])) / (hi - lo))]));
+}
 
 /** `tab` comes from the address (#models/installed), so the header menu can open either view. */
-export default function Models({ tab, system }: { tab: "discover" | "installed"; system: System | null }) {
+export default function Models({ tab }: { tab: "discover" | "installed" }) {
   const [models, setModels] = useState<LocalModel[] | null>(null);
   const [hw, setHw] = useState<Hardware | null>(null);
   const [memory, setMemory] = useState<Memory | null>(null);
   const [unlock, setUnlock] = useState<string[]>([]);
   const [editing, setEditing] = useState<LocalModel | null>(null);
+  const [filter, setFilter] = useState<Filter>("all");
   const [error, setError] = useState<string | null>(null);
   const confirm = useConfirm();
 
@@ -55,6 +87,8 @@ export default function Models({ tab, system }: { tab: "discover" | "installed";
   const busy = !!active;
   useEffect(() => {
     refresh();
+    window.addEventListener("focus", refresh); // models found after the page opened (ComfyUI's templates, online catalog)
+    return () => window.removeEventListener("focus", refresh);
   }, []);
   useEffect(() => {
     if (!busy) return;
@@ -78,7 +112,30 @@ export default function Models({ tab, system }: { tab: "discover" | "installed";
   // The gauge needs a GPU budget to measure against; on CPU it would only say "everything is slow".
   const budget = hw && hw.backend !== "cpu" && hw.vram_budget_gb > 0 ? hw.vram_budget_gb : 0;
   const d = active?.download;
-  const row = (m: LocalModel) => <ModelRow key={m.id} m={m} budget={budget} busy={busy} act={act} onSettings={() => setEditing(m)} onDelete={() => remove(m)} />;
+  const speed = speedLevels(models ?? []);
+  const props = (m: LocalModel): RowProps => ({ m, budget, busy, act, speed: speed.get(m.id), onSettings: () => setEditing(m), onDelete: () => remove(m) });
+  const row = (m: LocalModel) => <ModelRow key={m.id} {...props(m)} />;
+  const shown = models?.filter((m) => matches(m, filter)) ?? [];
+  const wontRun = shown.filter((m) => !runsHere(m));
+  const tierSection = ([tier, title, cap, icon]: Section) => {
+    const rows = shown.filter((m) => m.tier === tier && runsHere(m));
+    return (
+      rows.length > 0 && (
+        <section key={tier} className="tier" aria-labelledby={`tier-${tier}`}>
+          <SectionHead id={`tier-${tier}`} icon={icon} title={title} cap={cap} />
+          {tier === "best" ? (
+            <div className="pick-grid">
+              {rows.map((m, i) => (
+                <PickCard key={m.id} first={i === 0 && filter === "all"} {...props(m)} />
+              ))}
+            </div>
+          ) : (
+            <div className="card list-card">{rows.map(row)}</div>
+          )}
+        </section>
+      )
+    );
+  };
   const unlockNames = models?.filter((m) => unlock.includes(m.id)).map((m) => m.name) ?? [];
 
   return (
@@ -96,8 +153,7 @@ export default function Models({ tab, system }: { tab: "discover" | "installed";
       </PageHeader>
 
       {error && <Alert>{error}</Alert>}
-      {hw && memory && <ThisComputer hw={hw} memory={memory} system={system} />}
-      <EngineCard system={system} models={installed} onFolders={refresh} />
+      {tab === "discover" && hw && memory && <ThisComputer hw={hw} memory={memory} />}
 
       {active && d && (
         <div className="card download-bar" role="status" aria-live="polite">
@@ -129,102 +185,157 @@ export default function Models({ tab, system }: { tab: "discover" | "installed";
         </section>
       ) : (
         <>
-          {TIERS.map(([tier, title, cap]) => {
-            const rows = models.filter((m) => m.tier === tier);
-            return (
-              rows.length > 0 && (
-                <section key={tier} className="card list-card" aria-labelledby={`tier-${tier}`}>
-                  <div className="card-head">
-                    <h2 id={`tier-${tier}`}>{title}</h2>
-                    <span className="cap">{cap}</span>
-                  </div>
-                  {rows.map(row)}
-                </section>
-              )
-            );
-          })}
+          <fieldset className="filter-bar">
+            <legend className="sr-only">Good for</legend>
+            <span className="filter-label" aria-hidden="true">
+              Good for
+            </span>
+            <div className="chip-row">
+              {FILTERS.map(([id, label, icon]) => {
+                const count = models.filter((m) => matches(m, id)).length;
+                return (
+                  (count > 0 || id === filter) && (
+                    <label key={id} className="chip">
+                      <input type="radio" name="model-filter" checked={filter === id} onChange={() => setFilter(id)} />
+                      <Icon name={icon} size={16} />
+                      {label}
+                      <span className="count num">{count}</span>
+                    </label>
+                  )
+                );
+              })}
+            </div>
+          </fieldset>
+          {TIERS.map(tierSection)}
           {unlockNames.length > 0 && (
-            <section className="card">
-              <details className="more">
-                <summary>
-                  Unlock bigger models
+            <section className="card unlock" aria-labelledby="unlock-title">
+              <SectionHead id="unlock-title" icon="unlock" title="Unlock bigger models" cap="Advanced" />
+              <p className="small">
+                {unlockNames.join(", ")} would run fully on the GPU if models could use more memory. Raise the memory guard in{" "}
+                <a href="#settings/engine">Settings → Engine</a>. Less memory is then left for other apps.
+              </p>
+            </section>
+          )}
+          {tierSection(COMFYUI)}
+          {wontRun.length > 0 && (
+            <section className="card list-card">
+              <details className="wont">
+                <summary className="card-head">
+                  <div>
+                    <h2>
+                      Won't run on this computer <span className="num muted">({wontRun.length})</span>
+                    </h2>
+                    <span className="cap">Not enough memory or disk. Each row says what it needs</span>
+                  </div>
                   <Icon name="chevron" size={16} />
                 </summary>
-                <p className="muted small">
-                  {unlockNames.join(", ")} would run fully on the GPU if models could use more memory. Raise the memory guard in{" "}
-                  <a href="#settings/engine">Settings → Engine</a>. Less memory is then left for other apps.
-                </p>
+                {wontRun.map(row)}
               </details>
             </section>
           )}
         </>
       )}
+      {tab === "discover" && models && models.length > 0 && (
+        <p className="cap">Speed compares the models on this page, estimated from their size, steps and image size. Run Bench to measure one.</p>
+      )}
+      {tab === "discover" && <CatalogLine onAdded={refresh} />}
+      {tab === "installed" && <ComfyFolders onFolders={refresh} />}
       {editing && <ModelSettings model={editing} onClose={() => setEditing(null)} />}
       {confirm.dialog}
     </>
   );
 }
 
-function ModelRow({
-  m,
-  budget,
-  busy,
-  act,
-  onSettings,
-  onDelete,
-}: {
+// Mirrors CatalogRefresh.view() in host/app/catalog_refresh.py.
+type CatalogStatus = {
+  available: boolean;
+  enabled: boolean;
+  checked_at: number | null;
+  added: string[];
+  needs_update: string[];
+  error: string | null;
+};
+
+/** The online catalog: models added since this release, checked once at each start. */
+function CatalogLine({ onAdded }: { onAdded: () => void }) {
+  const [status, setStatus] = useState<CatalogStatus | null>(null);
+  const [checking, setChecking] = useState(false);
+  useEffect(() => {
+    api<CatalogStatus>("/api/v1/catalog").then(setStatus, () => setStatus(null));
+  }, []);
+  if (!status?.available) return null;
+
+  const check = () => {
+    setChecking(true);
+    api<CatalogStatus>("/api/v1/catalog/refresh", { method: "POST" })
+      .then((s) => (setStatus(s), onAdded()), (e) => setStatus({ ...status, error: e.message }))
+      .finally(() => setChecking(false));
+  };
+  const at = status.checked_at && new Date(status.checked_at * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const n = status.added.length;
+  const later = status.needs_update.length;
+  return (
+    <p className="cap catalog-line" role="status">
+      <span>
+        {checking
+          ? "Checking for new models…"
+          : status.error
+            ? `Couldn't check for new models: ${status.error}`
+            : at
+              ? `Checked for new models at ${at}.` + (n ? ` ${n} added since this version.` : "")
+              : status.enabled
+                ? "Not checked for new models yet."
+                : "Checking for new models at start is off."}
+        {!checking && later > 0 && ` ${later} more need an app update.`}
+      </span>
+      <button type="button" className="ghost small" onClick={check} disabled={checking}>
+        Check now
+      </button>
+    </p>
+  );
+}
+
+type RowProps = {
   m: LocalModel;
   budget: number;
   busy: boolean;
   act: (id: string, method: "POST" | "DELETE") => void;
+  speed: number | undefined; // speedLevels(); none for a model that won't run
   onSettings: () => void;
   onDelete: () => void;
-}) {
+};
+
+function SectionHead({ id, icon, title, cap }: { id: string; icon: IconName; title: string; cap: string }) {
+  return (
+    <div className="section-head">
+      <span className="section-icon" aria-hidden="true">
+        <Icon name={icon} size={16} />
+      </span>
+      <div>
+        <h2 id={id}>{title}</h2>
+        <span className="cap">{cap}</span>
+      </div>
+    </div>
+  );
+}
+
+function ModelRow({ m, budget, busy, act, speed, onSettings, onDelete }: RowProps) {
   const dl = m.download;
   return (
     <div className={m.fit === "wont_fit" && !m.installed ? "model-row off" : "model-row"}>
       <div className="model-head">
         <div className="model-name">
           <strong>{m.name}</strong>
-          <span className="tag">{m.precision}</span>
-          {m.license && (
-            <span className="tag" title={m.license.name}>
-              {m.license.commercial_ok ? "Commercial use ok" : "Non-commercial"}
-            </span>
-          )}
+          <Tags m={m} />
         </div>
         <div className="model-actions">
-          {m.installed ? (
-            <>
-              <span className="status quiet">
-                <Icon name="check" size={14} />
-                Installed
-              </span>
-              <span className="divider" aria-hidden />
-              <button className="icon" onClick={onSettings} aria-label={`${m.name} settings`} title="Settings">
-                <Icon name="sliders" size={16} />
-              </button>
-              <button className="icon delete" onClick={onDelete} disabled={busy} aria-label={`Delete ${m.name}`} title="Delete">
-                <Icon name="trash" size={16} />
-              </button>
-            </>
-          ) : dl?.status === "downloading" ? (
-            <span className="status quiet num">
-              {dl.total ? Math.round((dl.done / dl.total) * 100) : 0}%
-              <button className="icon" aria-label={`Cancel ${m.name} download`} title="Cancel" onClick={() => act(m.id, "DELETE")}>
-                <Icon name="x" />
-              </button>
-            </span>
-          ) : (
-            <button className="small" onClick={() => act(m.id, "POST")} disabled={busy || m.fit === "wont_fit"}>
-              <Icon name="download" size={16} />
-              {dl?.status === "failed" || dl?.status === "cancelled" ? "Resume" : "Download"}
-            </button>
-          )}
+          <ModelActions m={m} busy={busy} act={act} onSettings={onSettings} onDelete={onDelete} />
         </div>
       </div>
       <div className="model-body">
         <div className="model-meta">
+          {m.description && <span className="small">{m.description}</span>}
+          <Abilities m={m} />
           <span className="muted small num">
             {m.reason.replace(/\.$/, "")} · {gb(m.bytes)} on disk
           </span>
@@ -235,13 +346,137 @@ function ModelRow({
           )}
           {dl?.status === "failed" && dl.error && <span className="error small">{dl.error}</span>}
         </div>
-        <div className="fit">
-          {budget > 0 && <FitGauge fit={m.fit} need={m.min_vram_gb} budget={budget} />}
-          <FitLabel fit={m.fit}>{budget > 0 && ` · needs ${m.min_vram_gb.toFixed(1)} of ${budget.toFixed(1)} GB`}</FitLabel>
-        </div>
+        <FitBlock m={m} budget={budget} speed={speed} />
       </div>
     </div>
   );
+}
+
+/** A top pick, as a card: what it's good for, how fast and how much memory, and one button. */
+function PickCard({ m, first, budget, busy, act, speed, onSettings, onDelete }: RowProps & { first: boolean }) {
+  const dl = m.download;
+  return (
+    <article className={first ? "card pick first" : "card pick"} aria-labelledby={`pick-${m.id}`}>
+      {first && (
+        <span className="best-badge">
+          <Icon name="star" size={14} />
+          Best match
+        </span>
+      )}
+      <div className="pick-main">
+        <div className="pick-title">
+          <h3 id={`pick-${m.id}`}>{m.name}</h3>
+          {m.description && <span className="small muted">{m.description}</span>}
+        </div>
+        <div className="model-name">
+          <Tags m={m} />
+        </div>
+        <Abilities m={m} />
+        {m.fit !== "great" && <span className="muted small">{m.reason}</span>}
+        {dl?.status === "failed" && dl.error && <span className="error small">{dl.error}</span>}
+      </div>
+      <div className="pick-side">
+        <FitBlock m={m} budget={budget} speed={speed} />
+        <div className="pick-foot">
+          <span className="muted small num">{m.installed ? `${gb(m.bytes)} on disk` : `${gb(m.bytes)} download`}</span>
+          <div className="model-actions">
+            <ModelActions m={m} busy={busy} act={act} onSettings={onSettings} onDelete={onDelete} />
+          </div>
+        </div>
+      </div>
+    </article>
+  );
+}
+
+function Tags({ m }: { m: LocalModel }) {
+  return (
+    <>
+      {m.tier === "comfyui" && <span className="tag">ComfyUI template</span>}
+      <span className="tag">{m.precision}</span>
+      {m.license && (
+        <span className="tag" title={m.license.name}>
+          {m.license.commercial_ok ? "Commercial use ok" : "Non-commercial"}
+        </span>
+      )}
+    </>
+  );
+}
+
+function Abilities({ m }: { m: LocalModel }) {
+  return (
+    <ul className="abilities" aria-label={`What ${m.name} can do`}>
+      {abilities(m).map((a) => (
+        <li key={a} className="tag">
+          {a}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/** Speed dots, then the memory gauge and whether it fits. */
+function FitBlock({ m, budget, speed }: { m: LocalModel; budget: number; speed: number | undefined }) {
+  return (
+    <div className="fit">
+      {speed && (
+        <span className="speed">
+          <span className="cap">
+            Speed · <strong>{SPEED[speed - 1]}</strong>
+          </span>
+          <span className="dots" role="img" aria-label={`Speed ${speed} of 5`}>
+            {[1, 2, 3, 4, 5].map((i) => (
+              <i key={i} className={i <= speed ? "on" : undefined} />
+            ))}
+          </span>
+        </span>
+      )}
+      {budget > 0 && <FitGauge fit={m.fit} need={m.min_vram_gb} budget={budget} />}
+      <FitLabel fit={m.fit}>{budget > 0 && ` · needs ${m.min_vram_gb.toFixed(1)} of ${budget.toFixed(1)} GB`}</FitLabel>
+    </div>
+  );
+}
+
+function ModelActions({ m, busy, act, onSettings, onDelete }: Omit<RowProps, "budget" | "speed">) {
+  const dl = m.download;
+  return m.installed ? (
+    <>
+      <span className="status quiet">
+        <Icon name="check" size={14} />
+        Installed
+      </span>
+      <span className="divider" aria-hidden />
+      <button className="icon" onClick={onSettings} aria-label={`${m.name} settings`} title="Settings">
+        <Icon name="sliders" size={16} />
+      </button>
+      <button className="icon delete" onClick={onDelete} disabled={busy} aria-label={`Delete ${m.name}`} title="Delete">
+        <Icon name="trash" size={16} />
+      </button>
+    </>
+  ) : dl?.status === "downloading" ? (
+    <span className="status quiet num">
+      {dl.total ? Math.round((dl.done / dl.total) * 100) : 0}%
+      <button className="icon" aria-label={`Cancel ${m.name} download`} title="Cancel" onClick={() => act(m.id, "DELETE")}>
+        <Icon name="x" />
+      </button>
+    </span>
+  ) : (
+    <button className="small" onClick={() => act(m.id, "POST")} disabled={busy || m.fit === "wont_fit"}>
+      <Icon name="download" size={16} />
+      {dl?.status === "failed" || dl?.status === "cancelled" ? "Resume" : "Download"}
+    </button>
+  );
+}
+
+/** Short, plain words for a row's abilities (recommend_one() in host/app/local_models.py). */
+function abilities(m: LocalModel): string[] {
+  const a = m.abilities;
+  const mp = a.max_pixels && Math.round((a.max_pixels / 1e6) * 10) / 10;
+  return [
+    a.steps !== null && (fast(m) ? `Few steps · ${a.steps}` : `${a.steps} steps`),
+    a.custom_size ? (mp ? `Any size up to ${mp} MP` : "Any size") : "Set sizes only",
+    a.negative && "Negative prompt",
+    a.seed && "Repeatable with a seed",
+  ].filter((x): x is string => !!x);
 }
 
 // Mirrors ModelSettings in host/app/catalog.py and _view() in host/app/model_settings.py.
@@ -352,7 +587,7 @@ function ModelSettings({ model, onClose }: { model: LocalModel; onClose: () => v
 }
 
 /** What this computer can give models: the card at the top of Models. */
-function ThisComputer({ hw, memory, system }: { hw: Hardware; memory: Memory; system: System | null }) {
+function ThisComputer({ hw, memory }: { hw: Hardware; memory: Memory }) {
   const gpu = hw.gpus?.[0];
   const { total_gb: total, models_gb: models, headroom_gb: headroom, system_gb: other } = memory;
   const kind = memory.unified ? (hw.backend === "mps" ? "unified memory" : "memory") : "graphics memory";
@@ -370,61 +605,42 @@ function ThisComputer({ hw, memory, system }: { hw: Hardware; memory: Memory; sy
     ["", memory.unified ? "OS + other apps" : "Kept free", other],
   ];
   const shown = segments.filter(([, , gbs]) => gbs > 0.05);
-  const devices = system?.engine.up ? system.engine.devices : [];
 
   return (
     <section className="card hw" aria-labelledby="hw-title">
       <div className="hw-top">
+        <span className="hw-icon" aria-hidden="true">
+          <Icon name="cpu" size={22} />
+        </span>
         <div className="hw-id">
-          <span className="hw-icon" aria-hidden="true">
-            <Icon name="cpu" size={24} />
-          </span>
-          <div>
-            <span className="hw-label">This computer</span>
-            <h2 id="hw-title">{gpu?.name ?? hw.cpu ?? "Unknown processor"}</h2>
-            <span className="muted small num">{sub}</span>
-          </div>
+          <span className="hw-label">This computer</span>
+          <h2 id="hw-title">{gpu?.name ?? hw.cpu ?? "Unknown processor"}</h2>
         </div>
-        <div className="hw-budget">
-          <span className="hw-label">Memory for models</span>
-          <span className="figure num">
-            {models.toFixed(1)}
-            <small> GB</small>
-          </span>
+        <div className="hw-budget num">
+          <strong>{models.toFixed(1)} GB</strong> for models
         </div>
       </div>
-
       {total > 0 && models > 0 && (
-        <div>
-          <div className="stackbar" role="img" aria-label={shown.map(([, label, gbs]) => `${label} ${gbs.toFixed(1)} GB`).join(", ")}>
-            {shown.map(([cls, label, gbs]) => (
-              <span key={label} className={`seg ${cls}`} style={{ flexGrow: gbs }} />
-            ))}
-          </div>
-          <ul className="legend num">
-            {shown.map(([cls, label, gbs]) => (
-              <li key={label}>
-                <span className={`key ${cls}`} aria-hidden="true" />
-                {label} <strong>{gbs.toFixed(1)} GB</strong>
-              </li>
-            ))}
-          </ul>
+        <div className="stackbar" role="img" aria-label={shown.map(([, label, gbs]) => `${label} ${gbs.toFixed(1)} GB`).join(", ")}>
+          {shown.map(([cls, label, gbs]) => (
+            <span key={label} className={`seg ${cls}`} style={{ flexGrow: gbs }} />
+          ))}
         </div>
       )}
-
-      {devices.length > 0 && (
-        <dl className="facts">
-          {devices.map((d) => (
-            <GpuMemory key={d.name} name={d.name} total={d.vram_total} free={d.vram_free} />
+      <div className="hw-foot num">
+        <ul className="legend">
+          {shown.map(([cls, label, gbs]) => (
+            <li key={label}>
+              <span className={`key ${cls}`} aria-hidden="true" />
+              {label} <strong>{gbs.toFixed(1)} GB</strong>
+            </li>
           ))}
-        </dl>
-      )}
-
-      <div className="hw-foot">
-        <span className="tag">Runs on {hw.backend.toUpperCase()}</span>
-        {system && <span className="tag num">Models folder {gb(system.models_bytes)}</span>}
-        <span className="tag num">Free in models folder {hw.disk_free_gb.toFixed(0)} GB</span>
-        <span className="cap">Estimates. Real speed depends on image size and steps.</span>
+        </ul>
+        <span className="muted">
+          {sub}
+          {sub && " · "}
+          {hw.disk_free_gb.toFixed(0)} GB free on disk
+        </span>
       </div>
       {hw.warnings?.map((w) => (
         <p key={w} className="cap">
@@ -435,29 +651,12 @@ function ThisComputer({ hw, memory, system }: { hw: Hardware; memory: Memory; sy
   );
 }
 
-/** Live memory use the engine reports for one device. */
-function GpuMemory({ name, total, free }: { name: string; total: number; free: number }) {
-  return (
-    <>
-      <dt>{name.replace(/^cuda:\d+\s*/, "").split(" : ")[0] || name} in use now</dt>
-      <dd>
-        <div className="meter">
-          <span className="num">
-            {gb(total - free)} of {gb(total)}
-          </span>
-          <Progress value={(total - free) / total} label="GPU memory in use" />
-        </div>
-      </dd>
-    </>
-  );
-}
-
 // Mirrors engine_settings() in host/app/dashboard.py.
 type Folder = { path: string; models: number; exists: boolean };
-type EngineSettings = { preload: boolean; folders: Folder[]; found: Folder[] };
+type EngineSettings = { folders: Folder[]; found: Folder[] };
 
-/** The model kept in memory, loading one at start, and model folders from a ComfyUI already on this computer. */
-function EngineCard({ system, models, onFolders }: { system: System | null; models: LocalModel[]; onFolders: () => void }) {
+/** Model folders from a ComfyUI already on this computer. The model in memory lives in Settings › Engine. */
+function ComfyFolders({ onFolders }: { onFolders: () => void }) {
   const [settings, setSettings] = useState<EngineSettings | null>(null);
   const [path, setPath] = useState("");
   const [busy, setBusy] = useState(false);
@@ -467,14 +666,14 @@ function EngineCard({ system, models, onFolders }: { system: System | null; mode
     api<EngineSettings>("/api/v1/engine/settings").then(setSettings, (e) => setError(e.message));
   }, []);
 
-  const save = (body: { preload?: boolean; folders?: string[] }) => {
+  const save = (body: { folders: string[] }) => {
     setBusy(true);
     return api<EngineSettings>("/api/v1/engine/settings", { method: "PUT", body: JSON.stringify(body) })
       .then(
         (s) => {
           setSettings(s);
           setError(null);
-          if (body.folders) onFolders(); // linked models count as installed
+          onFolders(); // linked models count as installed
           return true;
         },
         (e) => (setError(e.message), false),
@@ -487,63 +686,13 @@ function EngineCard({ system, models, onFolders }: { system: System | null; mode
     e.preventDefault();
     if (path.trim()) link(path).then((ok) => ok && setPath(""));
   };
-  const engine = (action: "load" | "unload") =>
-    api(`/api/v1/engine/${action}`, { method: "POST" }).then(() => setError(null), (e) => setError(e.message));
-
-  const state = system?.engine.model;
-  const name = models.find((m) => m.id === state?.model)?.name ?? state?.model;
-  const up = !!system?.engine.up;
-
   return (
-    <section className="card" aria-labelledby="engine-title">
+    <section className="card" aria-labelledby="folders-title">
       <div className="card-head">
-        <h2 id="engine-title">Model in memory</h2>
-        <span className="cap">The first image after loading skips the wait</span>
+        <h2 id="folders-title">Models from your ComfyUI</h2>
+        <span className="cap">Linking restarts the engine</span>
       </div>
-      <div className="memory-row">
-        <div role="status">
-          {!up ? (
-            <span className="muted">The engine isn't running.</span>
-          ) : state?.status === "loading" ? (
-            <span className="status quiet">
-              <Icon name="spinner" size={14} />
-              Loading {name}… this takes a minute or two
-            </span>
-          ) : state?.status === "loaded" ? (
-            <span className="status">
-              <Icon name="check" size={14} />
-              {name} is loaded and ready
-            </span>
-          ) : (
-            <span className="muted">{state?.status === "failed" ? `Couldn't load ${name}: ${state.error}` : "No model loaded. The next image loads one first."}</span>
-          )}
-        </div>
-        {up &&
-          (state?.status === "loaded" || state?.status === "loading" ? (
-            <button className="small" onClick={() => engine("unload")}>
-              Unload
-            </button>
-          ) : (
-            <button className="small" onClick={() => engine("load")} disabled={models.length === 0}>
-              Load now
-            </button>
-          ))}
-      </div>
-      {settings && (
-        <div className="share-row">
-          <label className="toggle">
-            <input type="checkbox" className="switch" role="switch" checked={settings.preload} disabled={busy} onChange={(e) => save({ preload: e.target.checked })} />
-            Load a model when Glint Studio starts
-          </label>
-          <p className="help">Keeps it in memory until you unload it. Uses the default model, or the first one installed.</p>
-        </div>
-      )}
-
-      <h3 className="sub-title">
-        <Icon name="folder" size={16} />
-        Models from your ComfyUI
-      </h3>
-      <p className="muted small">Already have ComfyUI? Link its models folder and Glint Studio uses those files instead of downloading them again. Linking restarts the engine.</p>
+      <p className="muted small">Already have ComfyUI? Link its models folder and Glint Studio uses those files instead of downloading them again.</p>
       {error && <Alert>{error}</Alert>}
       {settings && (
         <ul className="folders">

@@ -60,6 +60,7 @@ class Settings(BaseSettings):
     # engine.json, {"preload", "folders"}: the app links the folders into ComfyUI (extra_model_paths.yaml
     # beside it) and restarts it when they change. Unset: no linked folders, no preload.
     engine_file: Path | None = None
+    catalog_url: str = ""  # catalog.json with models added since this release; empty: don't check
     keys_file: Path | None = None  # keys.json: extra API keys, hashed; unset keeps them in memory
     serve_on_network: bool = False  # the app started this host on every address, not just 127.0.0.1
     # Host header values the dashboard pages accept; ["*"] accepts any. Guards them against DNS

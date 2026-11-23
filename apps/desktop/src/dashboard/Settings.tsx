@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import type { System } from "./api";
 import { PageHeader } from "./ui";
 import Engine from "./settings/Engine";
 import Downloads from "./settings/Downloads";
@@ -17,13 +18,14 @@ const SECTIONS = [
   ["erase", "Erase"],
 ] as const;
 
-export default function Settings({ sub }: { sub: string }) {
+export default function Settings({ sub, system }: { sub: string; system: System | null }) {
   const [current, setCurrent] = useState(sub || SECTIONS[0][0]);
   useEffect(() => {
     if (sub) setCurrent(sub);
   }, [sub]);
 
-  // Highlight the last section whose top has passed under the top bar; at the bottom of the page, the last one.
+  // Highlight the last section whose top has passed under the top bar. At the bottom of the page the last sections
+  // can't reach the top, so there it's the linked one if it shows, else the last one.
   // Measured on scroll rather than observed, since some sections render only after their first fetch.
   useEffect(() => {
     const onScroll = () => {
@@ -31,7 +33,12 @@ export default function Settings({ sub }: { sub: string }) {
       let at: string = SECTIONS[0][0];
       for (const [id] of SECTIONS) {
         const el = document.getElementById(id);
-        if (el && (bottom || el.getBoundingClientRect().top <= 150)) at = id;
+        if (el && el.getBoundingClientRect().top <= 150) at = id;
+      }
+      if (bottom) {
+        const linked = location.hash.split("/")[1];
+        const top = linked ? document.getElementById(linked)?.getBoundingClientRect().top : undefined;
+        at = top !== undefined && top < innerHeight ? linked : SECTIONS[SECTIONS.length - 1][0];
       }
       setCurrent(at);
     };
@@ -55,7 +62,7 @@ export default function Settings({ sub }: { sub: string }) {
           </ul>
         </nav>
         <div className="settings-body">
-          <Engine />
+          <Engine system={system} />
           <Downloads />
           <Security />
           <Usage />

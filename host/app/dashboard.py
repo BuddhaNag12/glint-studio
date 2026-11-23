@@ -172,16 +172,18 @@ async def local_models(request: Request) -> dict:
     hw = await asyncio.to_thread(load_hardware, request.app.state.settings.hardware_file, models_dir, request.app.state.settings.engine_file)
     downloads: Downloads = request.app.state.downloads
     roots = await asyncio.to_thread(_roots, request)
-    rows = await asyncio.to_thread(
-        recommend,
-        hw,
-        list(request.app.state.models.values()),
-        lambda v: variant_installed(roots, v),
-        lambda model_id: measured_speed(request.app.state.settings, model_id),
+    templates = request.app.state.templates.ids
+    rank = lambda models: recommend(  # noqa: E731
+        hw, models, lambda v: variant_installed(roots, v), lambda model_id: measured_speed(request.app.state.settings, model_id)
     )
-    for row in rows:
+    models = list(request.app.state.models.values())
+    rows = await asyncio.to_thread(rank, [m for m in models if m.id not in templates])
+    extra = await asyncio.to_thread(rank, [m for m in models if m.id in templates])
+    for row in extra:  # ComfyUI's templates: their own section, not tested here
+        row["tier"], row["speed_note"] = "comfyui", None
+    for row in rows + extra:
         row["download"] = downloads.view(row["id"])
-    return {"hardware": hw, "models": rows, "memory": memory_split(hw), "unlock": unlockable(hw, rows)}
+    return {"hardware": hw, "models": rows + extra, "memory": memory_split(hw), "unlock": unlockable(hw, rows)}
 
 
 @router.post("/api/v1/local-models/{model_id}/download", status_code=202, dependencies=[Depends(require_main_key)])

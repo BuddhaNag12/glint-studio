@@ -2,6 +2,8 @@
   "id": "z-image-turbo",
   "name": "Z-Image Turbo",
   "family": "z-image",
+  "description": "Photoreal images in a few steps, and it can write English and Chinese text into them.",
+  "categories": ["photo", "text"],
   "provider": "comfyui",
   "license": {
     "name": "Apache-2.0",

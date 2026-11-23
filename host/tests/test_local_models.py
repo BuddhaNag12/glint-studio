@@ -88,6 +88,8 @@ def test_sorts_by_fit_then_quality_and_skips_cloud_models() -> None:
 def test_shipped_catalog_runs_great_on_a_24gb_mac() -> None:
     zimage = load_catalog(CATALOG)["z-image-turbo"]
     assert chosen_variant(hw("mps", 14.4, 24, 500), zimage).precision == "bf16"
+    row = recommend(hw("mps", 14.4, 24, 500), [zimage], lambda _v: False)[0]
+    assert row["categories"] == ["photo", "text"] and row["abilities"]["steps"] == 6 and row["abilities"]["negative"] is False
 
 
 def test_shipped_catalog_runs_great_on_8gb_gpus_and_16gb_macs() -> None:

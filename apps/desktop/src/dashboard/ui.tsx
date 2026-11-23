@@ -45,6 +45,10 @@ const ICONS = {
   settings: P.GearSix,
   gauge: P.Gauge,
   palette: P.Palette,
+  text: P.TextT,
+  bolt: P.Lightning,
+  bulb: P.Lightbulb,
+  unlock: P.LockSimpleOpen,
 };
 export type IconName = keyof typeof ICONS;
 /** A style's icon field is free text; anything not drawn here falls back to a palette. */

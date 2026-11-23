@@ -32,6 +32,16 @@ export default function Downloads() {
   const [saved, setSaved] = useState<Dl | null>(null);
   const [draft, setDraft] = useState<Dl>(DEFAULTS);
   const [error, setError] = useState<string | null>(null);
+  const [catalog, setCatalog] = useState<{ available: boolean; enabled: boolean } | null>(null);
+
+  useEffect(() => {
+    api<{ available: boolean; enabled: boolean }>("/api/v1/catalog").then(setCatalog, () => setCatalog(null));
+  }, []);
+  const setChecking = (enabled: boolean) =>
+    api<{ available: boolean; enabled: boolean }>("/api/v1/catalog", { method: "PUT", body: JSON.stringify({ enabled }) }).then(
+      setCatalog,
+      (e) => setError(e.message),
+    );
 
   const apply = ({ error, ...s }: Dl & { error: string | null }) => (setSaved(s), setDraft(s), setError(error));
   useEffect(() => {
@@ -46,6 +56,22 @@ export default function Downloads() {
   return (
     <SettingsSection id="downloads" title="Downloads" badge="live" onReset={changed ? () => save(DEFAULTS) : undefined}>
       {error && <Alert>{error}</Alert>}
+      {catalog?.available && (
+        <SettingRow
+          label="Check for new models"
+          id="catalog-check"
+          hint="At each start, fetch the short list of models added since this version, from GitHub. Models download only when you pick one."
+        >
+          <input
+            id="catalog-check"
+            type="checkbox"
+            role="switch"
+            className="switch"
+            checked={catalog.enabled}
+            onChange={(e) => setChecking(e.target.checked)}
+          />
+        </SettingRow>
+      )}
       {saved && (
         <>
           <SettingRow
