@@ -17,6 +17,7 @@ from app.catalog_refresh import apply, bundle, load_cached
 from tests.test_api import _setup_test_app
 
 CATALOG = Path(__file__).resolve().parents[2] / "catalog"
+BUILTIN = {p.stem for p in (CATALOG / "models").glob("*.json")}  # the models the app ships
 AUTH = {"Authorization": "Bearer test-secret-key"}
 LOCAL = ("127.0.0.1", 50000)
 
@@ -36,13 +37,13 @@ def _catalog_with_extra(tmp_path: Path) -> Path:
 def test_bundle_round_trip_keeps_only_new_models(tmp_path: Path) -> None:
     data = json.loads(json.dumps(bundle(_catalog_with_extra(tmp_path))))  # as it arrives over the network
     cache = tmp_path / "online-catalog"
-    assert apply(data, {"z-image-turbo"}, cache) == []
+    assert apply(data, BUILTIN, cache) == []
     assert sorted(p.name for p in (cache / "workflows").iterdir()) == ["extra-wf.json", "extra-wf.mapping.json"]
-    assert list(load_cached(cache, {"z-image-turbo"})) == ["extra"]
+    assert list(load_cached(cache, BUILTIN)) == ["extra"]
     # The next refresh replaces the cache: a model dropped online is gone here too.
     data["models"] = [m for m in data["models"] if m["id"] != "extra"]
-    apply(data, {"z-image-turbo"}, cache)
-    assert load_cached(cache, {"z-image-turbo"}) == {}
+    apply(data, BUILTIN, cache)
+    assert load_cached(cache, BUILTIN) == {}
 
 
 def test_entries_this_app_cannot_use_are_skipped(tmp_path: Path) -> None:
@@ -52,8 +53,8 @@ def test_entries_this_app_cannot_use_are_skipped(tmp_path: Path) -> None:
     escape = {**data["models"][0], "id": "escape", "workflow": "../x"}
     data["models"] += [newer, lost, escape, "junk"]
     cache = tmp_path / "online-catalog"
-    assert apply(data, {"z-image-turbo"}, cache) == ["newer", "lost", "escape", "None"]
-    assert list(load_cached(cache, {"z-image-turbo"})) == ["extra"]
+    assert apply(data, BUILTIN, cache) == ["newer", "lost", "escape", "None"]
+    assert list(load_cached(cache, BUILTIN)) == ["extra"]
     with pytest.raises(CatalogError, match="newer version"):
         apply({**data, "schema": 2}, set(), cache)
     assert list(load_cached(cache, set())) == ["extra"]  # a failed refresh keeps the last good one
