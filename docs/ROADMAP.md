@@ -352,16 +352,25 @@ Each phase ends with a working milestone, and each can ship on its own.
 - Also done (2026-11-17): a History sidebar on Generate (past images from every session with search; open one or reuse its settings; a sheet on narrow screens), from `GET /api/v1/history` with the newest 500 images kept next to the stats; saved settings profiles in `engine.json` (`GET/PUT /api/v1/profiles`); time and seconds per step on each result. The Logs page gets a line count, a refresh interval, a Table or Raw view, and the file's total line count. Still to do: peak VRAM per run (ComfyUI doesn't report it per job).
 
 **Phase 5b – More models (next, about 2 weeks)**
-Today the catalog holds one model, Z-Image Turbo, so Discover recommends the same model on every machine, and new models only arrive with a new app release.
+The catalog started with one model, Z-Image Turbo, so Discover recommended the same model on every machine, and new models only arrived with a new app release.
+- Done (2026-11-24, PRs #17–#19):
+  - **Variant pick:** with several variants of a model downloaded, the host runs the one that fits the GPU (the Models page's fit rule), else the smallest one downloaded.
+  - **DreamShaper 8 LCM** (2.1 GB, SD1.5 with LCM, 4–8 steps at 512 px, `sd15-lcm` workflow) for CPU-only and low-memory machines. 3–8 s per image on an Apple M5.
+  - **Flux.1 Schnell fp8**, imported from ComfyUI's template: 4 steps, cfg 1, no negative prompt. Not run yet; its 12 GB minimum is an estimate.
+  - **Template importer** (`host/tools/from_template.py`): turns one of ComfyUI's workflow templates into a catalog entry, API workflow and mapping, with sizes, hashes and license from Hugging Face, and has ComfyUI validate it without downloading the files. 9 of ComfyUI's 59 image templates import; the rest use LoRA, Dual/Quad CLIP, ResolutionSelector or V3 dynamic combos, which it doesn't handle yet.
+  - **Online catalog:** `.github/workflows/catalog.yml` publishes `catalog/` as the `catalog` release asset. The host checks it at start, caches it, and adds only models the app doesn't ship (`catalog_refresh.py`); an entry written for a newer app is skipped and counted as "needs an app update". Off in Settings → Downloads.
+  - **ComfyUI's templates as models** (`comfy_templates.py`): the installed engine's text-to-image templates become runnable models, file sizes looked up once and cached; API and edit templates are left out.
+  - **Discover:** each model shows what it's good for (photo, art, text) and what it takes (steps, sizes, negative prompt, seed), with a "Good for" filter. Tested picks are kept apart from ComfyUI's templates. Model in memory moved to Settings → Engine, and linking ComfyUI folders to Installed.
+- Still to do: a model for 24 GB or more, more variants, the HF token, search, and the milestone below.
 - **More catalog models:** two or three families from the starting tiers above:
-  - a small one for CPU-only and under-6 GB machines (SDXL-Turbo or SD1.5-LCM)
-  - Flux schnell fp8 for 12–16 GB
-  - Qwen-Image fp8 or Flux dev for 24 GB or more
+  - a small one for CPU-only and under-6 GB machines (SDXL-Turbo or SD1.5-LCM): done, DreamShaper 8 LCM
+  - Flux schnell fp8 for 12–16 GB: in the catalog, still to run on real hardware
+  - Qwen-Image fp8 or Flux dev for 24 GB or more: still to do
 
   Each family needs its own workflow template and mapping in `catalog/workflows/`, plus a catalog entry with sizes and hashes filled in by `host/tools/hf_fill.py`. Each one makes a real image on at least one machine before it ships, and Bench checks its speed label.
 - **More variants:** fp8 or GGUF where they're smaller than int8. GGUF needs the ComfyUI-GGUF custom node pinned in the engine install. nvfp4 (about 4.5 GB) is offered only on GPUs that run it, which are likely RTX 50 cards only.
 - **HF token** (in the keychain) for gated models such as Flux dev, set in Settings → Downloads.
-- **Catalog refresh:** the app checks the repo's latest release for a newer catalog, so new models show up without a new app version. It is one small request, checked by sha256, and can be turned off (see "Lightweight by design"). An entry that needs a workflow or custom node the installed engine doesn't have shows "Needs an app update".
+- **Catalog refresh** (done, see above; the sha256 check is still to do): the app checks the repo's latest release for a newer catalog, so new models show up without a new app version. It is one small request, checked by sha256, and can be turned off (see "Lightweight by design"). An entry that needs a workflow or custom node the installed engine doesn't have shows "Needs an app update".
 - **Find models in the app:** a search on Models → Discover over Hugging Face, limited to families the app already has a workflow for (for example, SDXL or Flux fine-tunes).
   - Results show size and license from the HF API.
   - A picked result becomes a user catalog entry in app data, with hashes from the HF tree API (the lookup `hf_fill.py` already does).
@@ -369,6 +378,9 @@ Today the catalog holds one model, Z-Image Turbo, so Discover recommends the sam
 - Milestone: Discover's "Best for this computer" names a different model on an 8 GB GPU, a 24 GB GPU and a 16 GB Mac, and each one makes an image. A model added to a release shows up in an installed app without updating the app. An SDXL fine-tune found by search downloads and generates.
 
 **Phase 5c – Chat, motion and the menu-bar menu (about 1–2 weeks)**
+- Partly done:
+  - **Chats:** Generate already keeps finished turns grouped into chats, with New chat, Delete chat and an Images tab, but in the browser's IndexedDB, so the phone page doesn't share them. Still to do: storing them in the host, rename and search.
+  - **Motion** (2026-11-18, CSS only, off under Reduce Motion): pages, alerts and opened sections rise in; modals and the image viewer scale in; controls ease between states. While an image is made, the engine's preview sharpens as the steps go by under a shimmer, and the finished image develops in. Still to do: the style-coloured gradient below.
 - **Chat history:** a left sidebar on Generate, like a chat app. Each chat keeps its prompts, settings and images; New chat, rename, delete, and search. Stored by the host (SQLite next to the stats), so the phone page sees the same history. Collapses to a drawer on narrow screens.
 - **Model picker in the chat:** a model menu in the composer (local and cloud, with fit and "in memory" marks). Picking a local model that isn't loaded says it will load first; the chat remembers its model.
 - **Generation animation:** while an image is being made, its frame shows a slow aurora gradient in the chosen style's colours with a soft sheen passing over it, the step progress in plain words, and the live preview fading in when ComfyUI sends one. The finished image fades in over the gradient. Reduced motion shows the gradient still, with no sheen.
