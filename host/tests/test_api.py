@@ -441,7 +441,7 @@ def test_models_and_styles_endpoints(tmp_path: Path) -> None:
         auth = {"Authorization": "Bearer test-secret-key"}
         models = client.get("/api/v1/models", headers=auth).json()["models"]
         by_id = {m["id"]: m for m in models}
-        assert set(by_id) == {"z-image-turbo", "dreamshaper-8-lcm"}
+        assert set(by_id) == {"z-image-turbo", "dreamshaper-8-lcm", "flux-schnell"}
         assert by_id["z-image-turbo"]["limits"]["sizes"]["phone"] == [624, 1344]
         styles = {s["id"]: s for s in client.get("/api/v1/styles", headers=auth).json()["styles"]}
         assert styles["lockscreen-wallpaper"]["overrides"]["shape"] == "phone"
