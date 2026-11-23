@@ -297,9 +297,7 @@ Merges that keep the version build nothing. Pushing a tag like `v0.2.0` by hand 
 
 ## Known limitations
 
-- **One local model.** Z-Image Turbo is the only model in the catalog so far. With both of its variants
-  downloaded, the host always uses bf16, even on a GPU too small for it: download only the one
-  **Models** marks as fitting.
+- **One local model.** Z-Image Turbo is the only model in the catalog so far.
 - **Unsigned builds.** macOS and Windows warn on first open (see [Install](#install)), and there's no
   auto-updater yet.
 - **Cloud providers:** OpenAI-compatible endpoints and remote ComfyUI only. Dedicated adapters
@@ -318,7 +316,7 @@ Merges that keep the version build nothing. Pushing a tag like `v0.2.0` by hand 
 - [x] Smaller model variant (int8) for 8 GB GPUs and 16 GB Macs
 - [x] Setup screen with download progress, Stop, and a fast path for parts already installed
 - [x] "Erase all data" in Settings
-- [ ] Pick the variant that fits when several are installed
+- [x] Pick the variant that fits when several are installed
 - [ ] Dedicated cloud adapters: Replicate, fal.ai, Stability AI, Black Forest Labs, Google
 - [ ] Import your own ComfyUI workflow
 - [ ] Chat history and a workflow view on Generate

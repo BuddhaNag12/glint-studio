@@ -440,8 +440,9 @@ def test_models_and_styles_endpoints(tmp_path: Path) -> None:
     with TestClient(app) as client:
         auth = {"Authorization": "Bearer test-secret-key"}
         models = client.get("/api/v1/models", headers=auth).json()["models"]
-        assert [m["id"] for m in models] == ["z-image-turbo"]
-        assert models[0]["limits"]["sizes"]["phone"] == [624, 1344]
+        by_id = {m["id"]: m for m in models}
+        assert set(by_id) == {"z-image-turbo", "dreamshaper-8-lcm", "flux-schnell"}
+        assert by_id["z-image-turbo"]["limits"]["sizes"]["phone"] == [624, 1344]
         styles = {s["id"]: s for s in client.get("/api/v1/styles", headers=auth).json()["styles"]}
         assert styles["lockscreen-wallpaper"]["overrides"]["shape"] == "phone"
 
@@ -531,6 +532,15 @@ async def test_comfyui_provider_maps_failures_to_error_codes(error: Exception, c
     assert err.value.code == code
 
 
+def _tiny_files(model):
+    """A copy whose files are 16 bytes. The real ones are ~20 GB, and Windows writes every byte of a truncated file."""
+    model = model.model_copy(deep=True)
+    for v in model.variants:
+        for f in v.files:
+            f.bytes = 16
+    return model
+
+
 async def test_comfyui_provider_loads_the_installed_variants_files(tmp_path: Path) -> None:
     from app.catalog import load_catalog, resolve_params
     from app.providers.base import ProviderRequest
@@ -538,9 +548,9 @@ async def test_comfyui_provider_loads_the_installed_variants_files(tmp_path: Pat
     from app.styles import compose
 
     catalog = Path(__file__).resolve().parents[2] / "catalog"
-    model = load_catalog(catalog)["z-image-turbo"]
+    model = _tiny_files(load_catalog(catalog)["z-image-turbo"])
     int8 = next(v for v in model.variants if v.precision == "int8")
-    for f in int8.files:  # sparse files of the right size count as downloaded
+    for f in int8.files:  # files of the right size count as downloaded
         (tmp_path / f.dest).parent.mkdir(parents=True, exist_ok=True)
         with (tmp_path / f.dest).open("wb") as out:
             out.truncate(f.bytes)
@@ -551,6 +561,27 @@ async def test_comfyui_provider_loads_the_installed_variants_files(tmp_path: Pat
     assert names["UNETLoader"]["unet_name"] == "z_image_turbo_int8_convrot.safetensors"
     assert names["CLIPLoader"]["clip_name"] == "qwen_3_4b_fp8_mixed.safetensors"
     assert names["VAELoader"]["vae_name"] == "ae.safetensors"
+
+
+@pytest.mark.parametrize(("vram", "unet"), [(16.0, "z_image_turbo_bf16.safetensors"), (8.0, "z_image_turbo_int8_convrot.safetensors")])
+async def test_comfyui_provider_runs_the_downloaded_variant_that_fits(tmp_path: Path, vram: float, unet: str) -> None:
+    from app.catalog import load_catalog, resolve_params
+    from app.providers.base import ProviderRequest
+    from app.providers.comfyui import ComfyUIProvider
+    from app.styles import compose
+
+    catalog = Path(__file__).resolve().parents[2] / "catalog"
+    model = _tiny_files(load_catalog(catalog)["z-image-turbo"])
+    for f in {f.dest: f for v in model.variants for f in v.files}.values():  # both variants downloaded
+        (tmp_path / f.dest).parent.mkdir(parents=True, exist_ok=True)
+        with (tmp_path / f.dest).open("wb") as out:
+            out.truncate(f.bytes)
+    fake = FakeComfyClient()
+    hw = {"backend": "cuda", "vram_budget_gb": vram}
+    provider = ComfyUIProvider(fake, catalog / "workflows", 5.0, roots=lambda: [tmp_path], hardware=lambda: hw)  # type: ignore[arg-type]
+    await provider.generate(ProviderRequest(model, compose(model, "x"), resolve_params(model)))
+    names = {n["class_type"]: n["inputs"] for n in (fake.last_workflow or {}).values()}
+    assert names["UNETLoader"]["unet_name"] == unet
 
 
 class _FakeWebSocket:
