@@ -531,6 +531,15 @@ async def test_comfyui_provider_maps_failures_to_error_codes(error: Exception, c
     assert err.value.code == code
 
 
+def _tiny_files(model):
+    """A copy whose files are 16 bytes. The real ones are ~20 GB, and Windows writes every byte of a truncated file."""
+    model = model.model_copy(deep=True)
+    for v in model.variants:
+        for f in v.files:
+            f.bytes = 16
+    return model
+
+
 async def test_comfyui_provider_loads_the_installed_variants_files(tmp_path: Path) -> None:
     from app.catalog import load_catalog, resolve_params
     from app.providers.base import ProviderRequest
@@ -538,9 +547,9 @@ async def test_comfyui_provider_loads_the_installed_variants_files(tmp_path: Pat
     from app.styles import compose
 
     catalog = Path(__file__).resolve().parents[2] / "catalog"
-    model = load_catalog(catalog)["z-image-turbo"]
+    model = _tiny_files(load_catalog(catalog)["z-image-turbo"])
     int8 = next(v for v in model.variants if v.precision == "int8")
-    for f in int8.files:  # sparse files of the right size count as downloaded
+    for f in int8.files:  # files of the right size count as downloaded
         (tmp_path / f.dest).parent.mkdir(parents=True, exist_ok=True)
         with (tmp_path / f.dest).open("wb") as out:
             out.truncate(f.bytes)
@@ -561,7 +570,7 @@ async def test_comfyui_provider_runs_the_downloaded_variant_that_fits(tmp_path: 
     from app.styles import compose
 
     catalog = Path(__file__).resolve().parents[2] / "catalog"
-    model = load_catalog(catalog)["z-image-turbo"]
+    model = _tiny_files(load_catalog(catalog)["z-image-turbo"])
     for f in {f.dest: f for v in model.variants for f in v.files}.values():  # both variants downloaded
         (tmp_path / f.dest).parent.mkdir(parents=True, exist_ok=True)
         with (tmp_path / f.dest).open("wb") as out:
