@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,7 @@ from app.comfy_client import (
     ProgressFn,
 )
 from app.errors import ApiError
+from app.local_models import variant_installed
 from app.providers.base import ProviderRequest, ProviderResult
 from app.schemas import GenerateRequest
 from app.workflow import (
@@ -22,16 +24,20 @@ from app.workflow import (
     WorkflowValidationError,
     load_workflow_bundle,
     prepare_workflow,
+    use_model_files,
 )
 
 
 class ComfyUIProvider:
     id = "comfyui"
 
-    def __init__(self, client: ComfyClient, workflows_dir: Path, timeout_seconds: float) -> None:
+    def __init__(
+        self, client: ComfyClient, workflows_dir: Path, timeout_seconds: float, roots: Callable[[], list[Path]] = lambda: []
+    ) -> None:
         self.client = client
         self.workflows_dir = workflows_dir  # the catalog's workflow templates
         self.timeout_seconds = timeout_seconds
+        self.roots = roots  # model folders, to find which variant is downloaded
 
     async def health(self) -> None:
         await self.system_stats()
@@ -60,6 +66,11 @@ class ComfyUIProvider:
         )
         try:
             workflow, mapping = load_workflow_bundle(self.workflows_dir, request.model.workflow or "")
+            roots = self.roots()
+            # The best installed variant; none installed keeps the template's names (ComfyUI then reports model_missing).
+            variant = next((v for v in request.model.variants if variant_installed(roots, v)), None)
+            if variant:
+                use_model_files(workflow, [f.dest for f in variant.files])
             return await self.run_workflow(workflow, mapping, fields, on_progress, on_preview)
         except (WorkflowNotFoundError, WorkflowValidationError) as exc:
             raise ApiError("workflow_failed", f"{request.model.name}: {exc}") from exc

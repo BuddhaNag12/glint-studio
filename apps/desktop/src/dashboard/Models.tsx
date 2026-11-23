@@ -1,6 +1,6 @@
 import { FormEvent, KeyboardEvent, useEffect, useState } from "react";
 import { api, gb, Hardware, System } from "./api";
-import { Alert, Fit, FitGauge, FitLabel, Icon, Modal, PageHeader, Progress, Tabs } from "./ui";
+import { Alert, Fit, FitGauge, FitLabel, Icon, Modal, PageHeader, Progress, Tabs, useConfirm } from "./ui";
 
 // Mirror recommend_one(), add_tiers(), memory_split() and Downloads.view() in host/app/local_models.py.
 type Download = { status: "downloading" | "done" | "failed" | "cancelled"; done: number; total: number; verifying: boolean; error: string | null };
@@ -37,6 +37,7 @@ export default function Models({ tab, system }: { tab: "discover" | "installed";
   const [unlock, setUnlock] = useState<string[]>([]);
   const [editing, setEditing] = useState<LocalModel | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const confirm = useConfirm();
 
   const refresh = () =>
     api<{ hardware: Hardware; models: LocalModel[]; memory: Memory; unlock: string[] }>("/api/v1/local-models").then(
@@ -64,11 +65,20 @@ export default function Models({ tab, system }: { tab: "discover" | "installed";
   const act = (id: string, method: "POST" | "DELETE") =>
     api(`/api/v1/local-models/${id}/download`, { method }).then(refresh, (e) => setError(e.message));
 
+  const remove = async (m: LocalModel) => {
+    const ok = await confirm.ask({
+      title: `Delete ${m.name}?`,
+      body: `Frees up to ${gb(m.bytes)}. Files another installed model uses stay. You can download it again later.`,
+      action: "Delete",
+    });
+    if (ok) api(`/api/v1/local-models/${m.id}`, { method: "DELETE" }).then(refresh, (e) => setError(e.message));
+  };
+
   const installed = models?.filter((m) => m.installed) ?? [];
   // The gauge needs a GPU budget to measure against; on CPU it would only say "everything is slow".
   const budget = hw && hw.backend !== "cpu" && hw.vram_budget_gb > 0 ? hw.vram_budget_gb : 0;
   const d = active?.download;
-  const row = (m: LocalModel) => <ModelRow key={m.id} m={m} budget={budget} busy={busy} act={act} onSettings={() => setEditing(m)} />;
+  const row = (m: LocalModel) => <ModelRow key={m.id} m={m} budget={budget} busy={busy} act={act} onSettings={() => setEditing(m)} onDelete={() => remove(m)} />;
   const unlockNames = models?.filter((m) => unlock.includes(m.id)).map((m) => m.name) ?? [];
 
   return (
@@ -150,6 +160,7 @@ export default function Models({ tab, system }: { tab: "discover" | "installed";
         </>
       )}
       {editing && <ModelSettings model={editing} onClose={() => setEditing(null)} />}
+      {confirm.dialog}
     </>
   );
 }
@@ -160,17 +171,19 @@ function ModelRow({
   busy,
   act,
   onSettings,
+  onDelete,
 }: {
   m: LocalModel;
   budget: number;
   busy: boolean;
   act: (id: string, method: "POST" | "DELETE") => void;
   onSettings: () => void;
+  onDelete: () => void;
 }) {
   const dl = m.download;
   return (
     <div className={m.fit === "wont_fit" && !m.installed ? "model-row off" : "model-row"}>
-      <div>
+      <div className="model-head">
         <div className="model-name">
           <strong>{m.name}</strong>
           <span className="tag">{m.precision}</span>
@@ -180,45 +193,52 @@ function ModelRow({
             </span>
           )}
         </div>
-        <span className="muted small num">
-          {m.reason} · {gb(m.bytes)}
-        </span>
-        {(m.speed_note || m.s_per_image) && (
-          <span className="muted small num">
-            {[m.speed_note, m.s_per_image && `${m.s_per_image.toFixed(1)} s per image, measured`].filter(Boolean).join(" · ")}
-          </span>
-        )}
-        {dl?.status === "failed" && dl.error && <span className="error small">{dl.error}</span>}
-      </div>
-      <div className="fit">
-        {budget > 0 && <FitGauge fit={m.fit} need={m.min_vram_gb} budget={budget} />}
-        <FitLabel fit={m.fit}>{budget > 0 && ` · needs ${m.min_vram_gb.toFixed(1)} of ${budget.toFixed(1)} GB`}</FitLabel>
-      </div>
-      <div>
-        {m.installed ? (
-          <>
-            <span className="status">
-              <Icon name="check" size={14} />
-              Installed
+        <div className="model-actions">
+          {m.installed ? (
+            <>
+              <span className="status quiet">
+                <Icon name="check" size={14} />
+                Installed
+              </span>
+              <span className="divider" aria-hidden />
+              <button className="icon" onClick={onSettings} aria-label={`${m.name} settings`} title="Settings">
+                <Icon name="sliders" size={16} />
+              </button>
+              <button className="icon delete" onClick={onDelete} disabled={busy} aria-label={`Delete ${m.name}`} title="Delete">
+                <Icon name="trash" size={16} />
+              </button>
+            </>
+          ) : dl?.status === "downloading" ? (
+            <span className="status quiet num">
+              {dl.total ? Math.round((dl.done / dl.total) * 100) : 0}%
+              <button className="icon" aria-label={`Cancel ${m.name} download`} title="Cancel" onClick={() => act(m.id, "DELETE")}>
+                <Icon name="x" />
+              </button>
             </span>
-            <button className="ghost small" onClick={onSettings} aria-label={`${m.name} settings`}>
-              <Icon name="sliders" size={16} />
-              Settings
+          ) : (
+            <button className="small" onClick={() => act(m.id, "POST")} disabled={busy || m.fit === "wont_fit"}>
+              <Icon name="download" size={16} />
+              {dl?.status === "failed" || dl?.status === "cancelled" ? "Resume" : "Download"}
             </button>
-          </>
-        ) : dl?.status === "downloading" ? (
-          <span className="status quiet num">
-            {dl.total ? Math.round((dl.done / dl.total) * 100) : 0}%
-            <button className="icon" aria-label={`Cancel ${m.name} download`} onClick={() => act(m.id, "DELETE")}>
-              <Icon name="x" />
-            </button>
+          )}
+        </div>
+      </div>
+      <div className="model-body">
+        <div className="model-meta">
+          <span className="muted small num">
+            {m.reason.replace(/\.$/, "")} · {gb(m.bytes)} on disk
           </span>
-        ) : (
-          <button className="small" onClick={() => act(m.id, "POST")} disabled={busy || m.fit === "wont_fit"}>
-            <Icon name="download" size={16} />
-            {dl?.status === "failed" || dl?.status === "cancelled" ? "Resume" : "Download"}
-          </button>
-        )}
+          {(m.speed_note || m.s_per_image) && (
+            <span className="muted small num">
+              {[m.speed_note, m.s_per_image && `${m.s_per_image.toFixed(1)} s per image, measured`].filter(Boolean).join(" · ")}
+            </span>
+          )}
+          {dl?.status === "failed" && dl.error && <span className="error small">{dl.error}</span>}
+        </div>
+        <div className="fit">
+          {budget > 0 && <FitGauge fit={m.fit} need={m.min_vram_gb} budget={budget} />}
+          <FitLabel fit={m.fit}>{budget > 0 && ` · needs ${m.min_vram_gb.toFixed(1)} of ${budget.toFixed(1)} GB`}</FitLabel>
+        </div>
       </div>
     </div>
   );

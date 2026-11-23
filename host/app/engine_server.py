@@ -24,6 +24,7 @@ MAX_IDLE_MINUTES = 7 * 24 * 60
 MAX_RESERVE_GB = 128.0
 SAFE_RESERVE_GB = 2  # mirrors SAFE_RESERVE_GB in runtime.rs
 GUARDS = ("safe", "balanced", "aggressive", "custom")
+ENGINE_NOT_INSTALLED = "Engine not installed. Finish setup in Glint Studio to make images on this computer."
 STARTING_FOR = 180  # seconds a fresh host waits for ComfyUI before calling it stopped (COMFYUI_START_TIMEOUT)
 
 
@@ -118,7 +119,9 @@ async def server(request: Request) -> dict:
         stats = None
     system = (stats or {}).get("system") or {}
     restarting = bool(cfg.engine_file and cfg.engine_file.with_name("engine_restart").exists())
-    if stats is not None:
+    if not cfg.engine_installed:
+        status = "not_installed"
+    elif stats is not None:
         status = "running"
     elif restarting or time.time() - engine.started < STARTING_FOR:
         status = "starting"

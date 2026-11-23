@@ -36,7 +36,10 @@ export function setKey(api_key: string) {
 
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = { "Content-Type": "application/json", Authorization: `Bearer ${conn?.api_key}` };
-  const res = await fetch(path, { ...init, headers });
+  // A request that never got an answer rejects with the browser's own words ("Load failed" in WebKit).
+  const res = await fetch(path, { ...init, headers }).catch(() => {
+    throw new Error("Couldn't reach the Glint Studio server. Check it's running, then try again.");
+  });
   const body = await res.json().catch(() => null);
   if (!res.ok) throw new Error(body?.error?.message ?? `${res.status} ${res.statusText}`);
   return body as T;

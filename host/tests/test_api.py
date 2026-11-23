@@ -146,6 +146,11 @@ def test_health_endpoint_reports_ok_and_degraded(tmp_path: Path) -> None:
         assert res_down.json()["comfyui_connected"] is False
         assert client.get("/livez").status_code == 200  # alive even with ComfyUI down
 
+        app.state.settings.engine_installed = False  # the desktop app's setup hasn't installed it
+        res_missing = client.get("/health")
+        assert res_missing.status_code == 503
+        assert res_missing.json()["detail"].startswith("Engine not installed")
+
 
 def test_generate_requires_valid_api_key_and_rejects_unconfigured_server(tmp_path: Path) -> None:
     app, fake_comfy, _ = _setup_test_app(tmp_path)
@@ -192,6 +197,13 @@ def test_cors_preflight_allows_configured_origin_only(tmp_path: Path) -> None:
         )
         assert allowed.status_code == 200
         assert allowed.headers.get("access-control-allow-origin") == "http://localhost:3000"
+
+        # The app's Settings window is another origin and saves settings with PUT.
+        put = client.options(
+            "/api/v1/settings/security",
+            headers={"Origin": "http://localhost:3000", "Access-Control-Request-Method": "PUT"},
+        )
+        assert put.status_code == 200
 
         disallowed = client.options(
             "/api/v1/generate",
@@ -517,6 +529,28 @@ async def test_comfyui_provider_maps_failures_to_error_codes(error: Exception, c
     with pytest.raises(ApiError) as err:
         await provider.generate(ProviderRequest(model, compose(model, "x"), resolve_params(model)))
     assert err.value.code == code
+
+
+async def test_comfyui_provider_loads_the_installed_variants_files(tmp_path: Path) -> None:
+    from app.catalog import load_catalog, resolve_params
+    from app.providers.base import ProviderRequest
+    from app.providers.comfyui import ComfyUIProvider
+    from app.styles import compose
+
+    catalog = Path(__file__).resolve().parents[2] / "catalog"
+    model = load_catalog(catalog)["z-image-turbo"]
+    int8 = next(v for v in model.variants if v.precision == "int8")
+    for f in int8.files:  # sparse files of the right size count as downloaded
+        (tmp_path / f.dest).parent.mkdir(parents=True, exist_ok=True)
+        with (tmp_path / f.dest).open("wb") as out:
+            out.truncate(f.bytes)
+    fake = FakeComfyClient()
+    provider = ComfyUIProvider(fake, catalog / "workflows", 5.0, roots=lambda: [tmp_path])  # type: ignore[arg-type]
+    await provider.generate(ProviderRequest(model, compose(model, "x"), resolve_params(model)))
+    names = {n["class_type"]: n["inputs"] for n in (fake.last_workflow or {}).values()}
+    assert names["UNETLoader"]["unet_name"] == "z_image_turbo_int8_convrot.safetensors"
+    assert names["CLIPLoader"]["clip_name"] == "qwen_3_4b_fp8_mixed.safetensors"
+    assert names["VAELoader"]["vae_name"] == "ae.safetensors"
 
 
 class _FakeWebSocket:

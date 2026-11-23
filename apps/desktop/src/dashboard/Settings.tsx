@@ -5,6 +5,7 @@ import Downloads from "./settings/Downloads";
 import Security from "./settings/Security";
 import Usage from "./settings/Usage";
 import Appearance from "./settings/Appearance";
+import Erase from "./settings/Erase";
 
 // Each section component renders a SettingsSection with the matching id; main.tsx scrolls #settings/<id> into view.
 const SECTIONS = [
@@ -13,6 +14,7 @@ const SECTIONS = [
   ["security", "Security"],
   ["usage", "Usage"],
   ["appearance", "Appearance"],
+  ["erase", "Erase"],
 ] as const;
 
 export default function Settings({ sub }: { sub: string }) {
@@ -58,6 +60,7 @@ export default function Settings({ sub }: { sub: string }) {
           <Security />
           <Usage />
           <Appearance />
+          <Erase />
         </div>
       </div>
     </>
