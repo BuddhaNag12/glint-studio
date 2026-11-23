@@ -1,0 +1,3 @@
+{
+  "ignoredFiles": ["apps/desktop/src-tauri/icons/*", "branding/png/glint-menubar-template@2x.png"]
+}
