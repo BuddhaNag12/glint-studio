@@ -41,13 +41,13 @@ def _variant_bytes(variant: Variant) -> int:
     return sum(f.bytes for f in variant.files)
 
 
-def _pick(hw: dict, model: CatalogModel) -> tuple[Variant, bool]:
+def _pick(hw: dict, variants: list[Variant]) -> tuple[Variant, bool]:
     """Variants are listed best first; the first that fits the GPU, else the smallest."""
     if hw["backend"] != "cpu":
-        for variant in model.variants:
+        for variant in variants:
             if variant.min_vram_gb <= hw["vram_budget_gb"]:
                 return variant, True
-    return model.variants[-1], False
+    return variants[-1], False
 
 
 def _short_of_disk(hw: dict, size: int, installed: bool) -> bool:
@@ -81,7 +81,7 @@ def memory_split(hw: dict) -> dict:
 
 
 def recommend_one(hw: dict, model: CatalogModel, installed: bool) -> dict:
-    variant, on_gpu = _pick(hw, model)
+    variant, on_gpu = _pick(hw, model.variants)
     size = _variant_bytes(variant)
     if _short_of_disk(hw, size, installed):
         fit, reason = "wont_fit", f"Needs {_gb(size * DISK_HEADROOM / GB)} of free disk; you have {_gb(hw['disk_free_gb'])}."
@@ -157,7 +157,7 @@ def recommend(
 ) -> list[dict]:
     """Every local model, best fit first, then by catalog quality, sorted into tiers."""
     local = [m for m in models if m.variants]
-    rows = [(m, recommend_one(hw, m, installed(_pick(hw, m)[0]))) for m in local]
+    rows = [(m, recommend_one(hw, m, installed(_pick(hw, m.variants)[0]))) for m in local]
     rows.sort(key=lambda row: (FIT_ORDER[row[1]["fit"]], -row[0].quality_rank))
     for _m, r in rows:
         r["s_per_image"] = measured(r["id"])
@@ -195,7 +195,13 @@ def measured_speed(settings: Any, model_id: str) -> float | None:
 
 
 def chosen_variant(hw: dict, model: CatalogModel) -> Variant | None:
-    return _pick(hw, model)[0] if model.variants else None
+    return _pick(hw, model.variants)[0] if model.variants else None
+
+
+def runnable_variant(hw: dict, model: CatalogModel, roots: list[Path]) -> Variant | None:
+    """The downloaded variant to run: the best that fits this machine, else the smallest downloaded."""
+    have = [v for v in model.variants if variant_installed(roots, v)]
+    return _pick(hw, have)[0] if have else None
 
 
 def variant_installed(roots: list[Path], variant: Variant) -> bool:

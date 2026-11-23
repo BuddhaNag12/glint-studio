@@ -1,0 +1,50 @@
+{
+  "id": "dreamshaper-8-lcm",
+  "name": "DreamShaper 8 LCM",
+  "family": "sd15",
+  "provider": "comfyui",
+  "license": {
+    "name": "CreativeML OpenRAIL-M",
+    "url": "https://huggingface.co/Lykon/dreamshaper-8-lcm",
+    "commercial_ok": true
+  },
+  "quality_rank": 40,
+  "workflow": "sd15-lcm",
+  "negative": "blurry, low quality, deformed, watermark, text",
+  "variants": [
+    {
+      "precision": "fp16",
+      "min_vram_gb": 3,
+      "files": [
+        {
+          "url": "https://huggingface.co/Lykon/dreamshaper-8-lcm/resolve/main/DreamShaper8_LCM.safetensors",
+          "sha256": "a4f3e1526c5dc4fcbe342f5c410d83ae202c7a415fcefcbb92e0f93fcd0a87c3",
+          "bytes": 2133804992,
+          "dest": "checkpoints/DreamShaper8_LCM.safetensors"
+        }
+      ]
+    }
+  ],
+  "defaults": { "shape": "square", "steps": 6, "cfg": 1.5 },
+  "quality": {
+    "fast": { "steps": 4 },
+    "standard": { "steps": 6 },
+    "best": { "steps": 8 }
+  },
+  "limits": {
+    "sizes": {
+      "square": [512, 512],
+      "portrait": [512, 768],
+      "landscape": [768, 512],
+      "phone": [448, 896]
+    },
+    "custom_size": true,
+    "multiple_of": 8,
+    "max_pixels": 589824,
+    "steps": [1, 12],
+    "cfg": [1.0, 2.5],
+    "n_max": 1,
+    "supports_negative": true,
+    "supports_seed": true
+  }
+}

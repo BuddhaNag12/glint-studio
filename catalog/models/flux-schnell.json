@@ -1,0 +1,78 @@
+{
+  "id": "flux-schnell",
+  "name": "Flux.1 Schnell",
+  "family": "flux-1",
+  "provider": "comfyui",
+  "license": {
+    "name": "apache-2.0",
+    "url": "https://huggingface.co/Comfy-Org/flux1-schnell",
+    "commercial_ok": true
+  },
+  "quality_rank": 70,
+  "workflow": "flux-schnell",
+  "requires_hf_token": false,
+  "variants": [
+    {
+      "precision": "fp8",
+      "min_vram_gb": 12,
+      "files": [
+        {
+          "url": "https://huggingface.co/Comfy-Org/flux1-schnell/resolve/main/flux1-schnell-fp8.safetensors",
+          "sha256": "ead426278b49030e9da5df862994f25ce94ab2ee4df38b556ddddb3db093bf72",
+          "bytes": 17236328572,
+          "dest": "checkpoints/flux1-schnell-fp8.safetensors"
+        }
+      ]
+    }
+  ],
+  "defaults": {
+    "shape": "square",
+    "steps": 4,
+    "cfg": 1
+  },
+  "quality": {
+    "fast": {
+      "steps": 2
+    },
+    "standard": {
+      "steps": 4
+    },
+    "best": {
+      "steps": 6
+    }
+  },
+  "limits": {
+    "sizes": {
+      "square": [
+        1024,
+        1024
+      ],
+      "portrait": [
+        832,
+        1248
+      ],
+      "landscape": [
+        1248,
+        832
+      ],
+      "phone": [
+        704,
+        1520
+      ]
+    },
+    "custom_size": true,
+    "multiple_of": 16,
+    "max_pixels": 2097152,
+    "n_max": 1,
+    "supports_negative": false,
+    "supports_seed": true,
+    "steps": [
+      1,
+      20
+    ],
+    "cfg": [
+      1.0,
+      2.0
+    ]
+  }
+}

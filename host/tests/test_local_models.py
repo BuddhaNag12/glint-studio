@@ -296,8 +296,8 @@ def test_extra_keys_scopes_and_daily_cap(tmp_path: Path) -> None:
         app.state.models["z-image-turbo"] = model.model_copy(update={"cloud": True})
         res = client.post("/v1/images/generations", json=body, headers=phone)
         assert res.status_code == 403 and res.json()["error"]["code"] == "forbidden"
-        assert client.get("/api/v1/models", headers=phone).json()["models"] == []
-        assert len(client.get("/api/v1/models", headers=AUTH).json()["models"]) == 1
+        assert "z-image-turbo" not in {m["id"] for m in client.get("/api/v1/models", headers=phone).json()["models"]}
+        assert "z-image-turbo" in {m["id"] for m in client.get("/api/v1/models", headers=AUTH).json()["models"]}
         app.state.models["z-image-turbo"] = model
         assert client.post("/v1/images/generations", json=body, headers=phone).status_code == 200  # cap lifted
 

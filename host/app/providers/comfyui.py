@@ -15,7 +15,7 @@ from app.comfy_client import (
     ProgressFn,
 )
 from app.errors import ApiError
-from app.local_models import variant_installed
+from app.local_models import runnable_variant
 from app.providers.base import ProviderRequest, ProviderResult
 from app.schemas import GenerateRequest
 from app.workflow import (
@@ -37,6 +37,7 @@ class ComfyUIProvider:
         workflows_dir: Path,
         timeout_seconds: float,
         roots: Callable[[], list[Path]] = lambda: [],
+        hardware: Callable[[], dict] = lambda: {"backend": "cpu", "vram_budget_gb": 0.0},
         extra_workflows_dirs: list[Path] = (),
     ) -> None:
         self.client = client
@@ -44,6 +45,7 @@ class ComfyUIProvider:
         self.extra_workflows_dirs = [d for d in extra_workflows_dirs if d]  # online catalog, ComfyUI's templates
         self.timeout_seconds = timeout_seconds
         self.roots = roots  # model folders, to find which variant is downloaded
+        self.hardware = hardware  # the app's machine scan, to pick the variant that fits
 
     async def health(self) -> None:
         await self.system_stats()
@@ -75,9 +77,9 @@ class ComfyUIProvider:
             # A built-in template wins over an online one of the same name.
             here = next((d for d in [self.workflows_dir, *self.extra_workflows_dirs] if (d / f"{name}.json").is_file()), self.workflows_dir)
             workflow, mapping = load_workflow_bundle(here, name)
-            roots = self.roots()
-            # The best installed variant; none installed keeps the template's names (ComfyUI then reports model_missing).
-            variant = next((v for v in request.model.variants if variant_installed(roots, v)), None)
+            # The best downloaded variant that fits; none downloaded keeps the template's names (ComfyUI then
+            # reports model_missing).
+            variant = runnable_variant(self.hardware(), request.model, self.roots())
             if variant:
                 use_model_files(workflow, [f.dest for f in variant.files])
             return await self.run_workflow(workflow, mapping, fields, on_progress, on_preview)

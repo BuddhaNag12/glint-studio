@@ -83,13 +83,21 @@ def _detect_mapping(workflow: dict[str, Any]) -> dict[str, Any]:
                 if scalar_key not in mapping and scalar_key in inputs and not _is_link(inputs[scalar_key]):
                     mapping[scalar_key] = {"node_id": node_id, "input_key": scalar_key}
 
-        if class_type in LATENT_CLASSES:
+        if class_type in LATENT_CLASSES or (class_type.startswith("Empty") and "Latent" in class_type):
             for dim_key in ("width", "height"):
                 if dim_key not in mapping and dim_key in inputs and not _is_link(inputs[dim_key]):
                     mapping[dim_key] = {"node_id": node_id, "input_key": dim_key}
 
         if class_type == "SaveImage" and "output_node_id" not in mapping:
             mapping["output_node_id"] = node_id
+
+    # Custom-sampler graphs keep these on their own nodes (RandomNoise, BasicScheduler, CFGGuider).
+    for node_id, node in workflow.items():
+        inputs = node.get("inputs") if isinstance(node, dict) and isinstance(node.get("inputs"), dict) else {}
+        for field, keys in (("seed", ("noise_seed", "seed")), ("steps", ("steps",)), ("cfg", ("cfg",))):
+            key = next((k for k in keys if k in inputs and not _is_link(inputs[k])), None)
+            if field not in mapping and key:
+                mapping[field] = {"node_id": node_id, "input_key": key}
 
     if "positive_prompt" not in mapping:
         for node_id, node in workflow.items():
@@ -104,6 +112,10 @@ def _detect_mapping(workflow: dict[str, Any]) -> dict[str, Any]:
                     elif "positive_prompt" not in mapping:
                         mapping["positive_prompt"] = {"node_id": node_id, "input_key": key}
                     break
+
+    # A zeroed-out negative traces back to the positive prompt; writing the negative there would replace it.
+    if mapping.get("negative_prompt") == mapping.get("positive_prompt"):
+        mapping.pop("negative_prompt", None)
 
     if "output_node_id" not in mapping:
         for node_id, node in workflow.items():
