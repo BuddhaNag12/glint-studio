@@ -54,7 +54,7 @@ from app.engine_server import router as engine_server_router
 from app.errors import ApiError, api_error_handler
 from app.jobs import Job, JobQueue
 from app.keys import Keys
-from app.local_models import Downloads
+from app.local_models import Downloads, load_hardware
 from app.model_folders import get_setting, model_roots, read_settings
 from app.naming import extract_image_title, safe_header_value, title_to_filename_slug
 from app.providers.base import ProviderRequest
@@ -195,6 +195,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     resolved_settings.catalog_dir / "workflows",
                     resolved_settings.request_timeout_seconds,
                     roots=lambda: model_roots(resolved_settings.models_dir, resolved_settings.engine_file),
+                    hardware=lambda: load_hardware(
+                        resolved_settings.hardware_file, resolved_settings.models_dir or Path("models"), resolved_settings.engine_file
+                    ),
                 ),
                 **remote_providers,
             }

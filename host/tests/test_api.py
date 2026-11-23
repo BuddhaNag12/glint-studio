@@ -553,6 +553,27 @@ async def test_comfyui_provider_loads_the_installed_variants_files(tmp_path: Pat
     assert names["VAELoader"]["vae_name"] == "ae.safetensors"
 
 
+@pytest.mark.parametrize(("vram", "unet"), [(16.0, "z_image_turbo_bf16.safetensors"), (8.0, "z_image_turbo_int8_convrot.safetensors")])
+async def test_comfyui_provider_runs_the_downloaded_variant_that_fits(tmp_path: Path, vram: float, unet: str) -> None:
+    from app.catalog import load_catalog, resolve_params
+    from app.providers.base import ProviderRequest
+    from app.providers.comfyui import ComfyUIProvider
+    from app.styles import compose
+
+    catalog = Path(__file__).resolve().parents[2] / "catalog"
+    model = load_catalog(catalog)["z-image-turbo"]
+    for f in {f.dest: f for v in model.variants for f in v.files}.values():  # both variants downloaded
+        (tmp_path / f.dest).parent.mkdir(parents=True, exist_ok=True)
+        with (tmp_path / f.dest).open("wb") as out:
+            out.truncate(f.bytes)
+    fake = FakeComfyClient()
+    hw = {"backend": "cuda", "vram_budget_gb": vram}
+    provider = ComfyUIProvider(fake, catalog / "workflows", 5.0, roots=lambda: [tmp_path], hardware=lambda: hw)  # type: ignore[arg-type]
+    await provider.generate(ProviderRequest(model, compose(model, "x"), resolve_params(model)))
+    names = {n["class_type"]: n["inputs"] for n in (fake.last_workflow or {}).values()}
+    assert names["UNETLoader"]["unet_name"] == unet
+
+
 class _FakeWebSocket:
     def __init__(self, messages: list[Any]) -> None:
         self._messages = iter(messages)
