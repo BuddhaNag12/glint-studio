@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "glint-studio-host"
-version = "0.1.0"
+version = "0.2.0"
 description = "Local image-generation host: an authenticated API in front of a managed ComfyUI."
 license = "GPL-3.0-only"
 requires-python = ">=3.10"
