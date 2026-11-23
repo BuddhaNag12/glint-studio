@@ -17,6 +17,7 @@
 </p>
 
 <p align="center">
+  <a href="#screenshots">Screenshots</a> ·
   <a href="#install">Install</a> ·
   <a href="#quickstart">Quickstart</a> ·
   <a href="#features">Features</a> ·
@@ -36,6 +37,27 @@ config file is needed.
 > [!WARNING]
 > **Alpha.** Glint Studio works end to end on the machines it has been tested on, but expect rough
 > edges, and the installers aren't signed yet. See [Known limitations](#known-limitations).
+
+## Screenshots
+
+**Generate:** type a prompt, pick a style, and the image appears in the chat.
+
+![Generate](docs/screenshots/generate.jpg)
+
+**Models:** what this computer can run, with one-click downloads.
+
+![Models](docs/screenshots/models.jpg)
+
+**From your phone:** pair a phone on the same Wi-Fi with its own key, then make images from it. They're
+generated on your computer.
+
+![A phone making an image through Glint Studio](docs/screenshots/phone.jpg)
+
+| Dashboard | API |
+|---|---|
+| ![Dashboard](docs/screenshots/dashboard.jpg) | ![API](docs/screenshots/api.jpg) |
+| **Bench** | **Settings** |
+| ![Bench](docs/screenshots/bench.jpg) | ![Settings](docs/screenshots/settings.jpg) |
 
 ## Install
 
@@ -319,6 +341,8 @@ Merges that keep the version build nothing. Pushing a tag like `v0.2.0` by hand 
 - [x] Pick the variant that fits when several are installed
 - [ ] Dedicated cloud adapters: Replicate, fal.ai, Stability AI, Black Forest Labs, Google
 - [ ] Import your own ComfyUI workflow
+- [ ] More models: a small one for CPU and low-memory machines, Flux, Qwen-Image
+- [ ] New models without an app update, and model search on Discover
 - [ ] Chat history and a workflow view on Generate
 - [ ] Signed and notarized installers, and an auto-updater
 

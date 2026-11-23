@@ -148,7 +148,8 @@ export default function Generate({ phone }: { phone?: boolean }) {
     }, (e) => setError(e.message));
     loadStyles();
     store("readonly", (s) => s.getAll()).then((all) => {
-      const old = (all as Turn[]).sort((a, b) => a.created - b.created);
+      // Turns kept before the merge fix hold seconds; any real ms time is past 1e12.
+      const old = (all as Turn[]).map((t) => (t.created < 1e12 ? { ...t, created: t.created * 1000 } : t)).sort((a, b) => a.created - b.created);
       old.filter(finished).forEach((t) => kept.current.add(t.id));
       setTurns((now) => [...old, ...now.filter((t) => !old.some((o) => o.id === t.id))]);
       // Reopen the latest chat, unless a message went out before the kept ones loaded.
@@ -174,8 +175,9 @@ export default function Generate({ phone }: { phone?: boolean }) {
   }, [turns]);
 
   // A finished turn never goes back to unfinished, whichever of the event and the fetch lands last.
+  // The job's own `created` is in seconds; the turn keeps its ms one.
   const merge = (id: string, v: Partial<Turn>) =>
-    setTurns((all) => all.map((t) => (t.id !== id || (finished(t) && !finished({ status: v.status ?? t.status })) ? t : { ...t, ...v })));
+    setTurns((all) => all.map((t) => (t.id !== id || (finished(t) && !finished({ status: v.status ?? t.status })) ? t : { ...t, ...v, created: t.created })));
   const refresh = (id: string) =>
     api<JobView>(`/api/v1/jobs/${id}`).then(({ data, ...v }) => merge(id, { ...v, image: data?.[0]?.b64_json }), () => {});
 
