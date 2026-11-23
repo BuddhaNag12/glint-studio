@@ -39,6 +39,9 @@ from app.auth import (
 )
 from app.bench import router as bench_router
 from app.catalog import ID_PATTERN, CatalogModel, load_catalog, resolve_params, with_user_settings
+from app.catalog_refresh import CatalogRefresh
+from app.catalog_refresh import router as catalog_router
+from app.comfy_templates import ComfyTemplates
 from app.comfy_client import ComfyClient, ComfyImageOutput, infer_mime_and_ext
 from app.config import Settings
 from app.dashboard import Sessions
@@ -178,6 +181,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 resolved_settings.providers_file, set(models), http_client
             )
             app.state.models = {**models, **remote_models}
+            # Adds the models saved by the last online check; the check itself runs after startup.
+            app.state.catalog = CatalogRefresh(
+                resolved_settings.catalog_url, resolved_settings.engine_file, app.state.models, http_client
+            )
+            # ComfyUI's own text-to-image templates, read once ComfyUI answers (Discover → More from ComfyUI).
+            app.state.templates = ComfyTemplates(
+                resolved_settings.comfyui_http_url, resolved_settings.engine_file, app.state.models, http_client
+            )
             app.state.styles = styles
             comfy_client = ComfyClient(
                 http_url=resolved_settings.comfyui_http_url,
@@ -195,6 +206,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     resolved_settings.catalog_dir / "workflows",
                     resolved_settings.request_timeout_seconds,
                     roots=lambda: model_roots(resolved_settings.models_dir, resolved_settings.engine_file),
+                    extra_workflows_dirs=[
+                        app.state.catalog.cache_dir and app.state.catalog.cache_dir / "workflows",
+                        app.state.templates.workflows_dir,
+                    ],
                 ),
                 **remote_providers,
             }
@@ -233,10 +248,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     download_client, resolved_settings.models_dir or Path("models"), engine_file=resolved_settings.engine_file
                 )
                 watcher = asyncio.create_task(app.state.engine.watch())
+                online = app.state.catalog.enabled()  # the template scan looks up file sizes on Hugging Face
+                catalog_check = asyncio.create_task(app.state.catalog.refresh()) if online else None
+                templates_scan = asyncio.create_task(app.state.templates.run()) if online else None
                 try:
                     yield
                 finally:
                     watcher.cancel()
+                    for task in (catalog_check, templates_scan):
+                        if task:
+                            task.cancel()
                     await app.state.engine.close()
                     await app.state.downloads.cancel()
                     if getattr(app.state, "bench", None):
@@ -270,6 +291,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(mcp_router)
     app.include_router(history_router)
     app.include_router(net_settings_router)
+    app.include_router(catalog_router)
 
     app.add_middleware(
         CORSMiddleware,

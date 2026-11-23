@@ -108,7 +108,7 @@ export default function Settings({ onSetup }: { onSetup: () => void }) {
         </section>
       </>
     ),
-    engine: () => <Engine />,
+    engine: () => <Engine system={system} />,
     downloads: () => <Downloads />,
     providers: () => host && <ProviderKeys host={host} onHost={hostChanged} />,
     appearance: () => <Appearance />,

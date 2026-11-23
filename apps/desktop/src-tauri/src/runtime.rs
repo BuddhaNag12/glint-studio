@@ -781,6 +781,8 @@ fn webview_origins() -> &'static str {
     }
 }
 
+const CATALOG_URL: &str = "https://github.com/BuddhaNag12/glint-studio/releases/download/catalog/catalog.json";
+
 /// `resources` holds `host/` (the app package and pyproject.toml), `catalog/` and `dashboard/` (the built UI).
 /// `lan` binds every address; the API key is required either way, and the dashboard pages stay local-only.
 pub fn host_spec(paths: &Paths, resources: &Path, port: u16, api_key: &str, lan: bool) -> ProcessSpec {
@@ -791,6 +793,8 @@ pub fn host_spec(paths: &Paths, resources: &Path, port: u16, api_key: &str, lan:
         ("PUBLIC_BASE_URL", url.clone()),
         ("CORS_ORIGINS", webview_origins().to_string()),
         ("CATALOG_DIR", path(resources.join("catalog"))),
+        // Models added after this release; CATALOG_URL in the app's own environment points it elsewhere (testing).
+        ("CATALOG_URL", std::env::var("CATALOG_URL").unwrap_or_else(|_| CATALOG_URL.into())),
         ("OUTPUT_DIR", path(paths.outputs())),
         ("WORKFLOWS_DIR", path(paths.workflows())),
         ("USER_STYLES_DIR", path(paths.styles())),
@@ -964,6 +968,7 @@ mod tests {
         assert_eq!(env("PUBLIC_BASE_URL"), Some("http://127.0.0.1:4321"));
         assert!(env("CORS_ORIGINS").unwrap().contains("tauri://localhost"));
         assert_eq!(env("CATALOG_DIR").map(PathBuf::from), Some(PathBuf::from("/res").join("catalog")));
+        assert!(env("CATALOG_URL").unwrap().starts_with("http"));
         assert_eq!(spec.cwd, Some(PathBuf::from("/res").join("host")));
         assert_eq!(env("MODELS_DIR").map(PathBuf::from), Some(PathBuf::from("/data").join("models")));
         assert_eq!(env("DASHBOARD_DIR").map(PathBuf::from), Some(PathBuf::from("/res").join("dashboard")));

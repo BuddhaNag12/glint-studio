@@ -109,6 +109,15 @@ def recommend_one(hw: dict, model: CatalogModel, installed: bool) -> dict:
         "installed": installed,
         "quality_rank": model.quality_rank,
         "cost": speed_cost(model, variant),
+        "description": model.description,
+        "categories": model.categories,
+        "abilities": {  # what Discover shows on each row
+            "steps": model.defaults.steps,
+            "negative": model.limits.supports_negative,
+            "seed": model.limits.supports_seed,
+            "custom_size": model.limits.custom_size,
+            "max_pixels": model.limits.max_pixels,
+        },
     }
 
 

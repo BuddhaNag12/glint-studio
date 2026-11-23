@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
-import { api } from "../api";
+import { api, type System } from "../api";
 import { EngineServer, MemoryGuard, restartEngine } from "../ServerCard";
-import { Alert, SettingRow, SettingsSection } from "../ui";
+import { Alert, Icon, SettingRow, SettingsSection } from "../ui";
 
 const IDLE: [number, string][] = [
   [0, "Never"],
@@ -21,16 +21,18 @@ const GUARDS: [MemoryGuard, string, string][] = [
 
 type Settings = EngineServer["settings"];
 
-/** Settings › Engine: loading at start, idle unload, and the memory guard ComfyUI starts with. */
-export default function Engine() {
+/** Settings › Engine: the model in memory, loading at start, idle unload, and the memory guard ComfyUI starts with. */
+export default function Engine({ system }: { system: System | null }) {
   const [preload, setPreload] = useState<boolean | null>(null);
   const [server, setServer] = useState<EngineServer | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [names, setNames] = useState<Record<string, string>>({});
 
   useEffect(() => {
     api<{ preload: boolean }>("/api/v1/engine/settings").then((s) => setPreload(s.preload), (e) => setError(e.message));
     api<EngineServer>("/api/v1/engine/server").then(setServer, (e) => setError(e.message));
+    api<{ models: { id: string; name: string }[] }>("/api/v1/models").then((r) => setNames(Object.fromEntries(r.models.map((m) => [m.id, m.name]))), () => {});
   }, []);
 
   const run = <T,>(call: () => Promise<T>, done: (v: T) => void) => {
@@ -46,6 +48,11 @@ export default function Engine() {
     run(() => api<EngineServer>("/api/v1/engine/server", { method: "PUT", body: JSON.stringify(patch) }), setServer);
 
   const s = server?.settings;
+  const up = !!system?.engine.up;
+  const state = system?.engine.model;
+  const name = (state?.model && names[state.model]) ?? state?.model;
+  const inMemory = state?.status === "loaded" || state?.status === "loading";
+  const engine = (action: "load" | "unload") => run(() => api(`/api/v1/engine/${action}`, { method: "POST" }), () => {});
   const idleOptions = s && !IDLE.some(([m]) => m === s.idle_unload_minutes) ? [...IDLE, [s.idle_unload_minutes, `${s.idle_unload_minutes} min`] as [number, string]] : IDLE;
 
   return (
@@ -57,6 +64,34 @@ export default function Engine() {
         onReset={preload || s?.idle_unload_minutes ? () => (savePreload(false), save({ idle_unload_minutes: 0 })) : undefined}
       >
         {error && <Alert>{error}</Alert>}
+        <SettingRow
+          label="Model in memory"
+          hint={
+            <span role="status">
+              {!up ? (
+                "The engine isn't running."
+              ) : state?.status === "loading" ? (
+                <span className="status quiet">
+                  <Icon name="spinner" size={14} />
+                  Loading {name}… this takes a minute or two
+                </span>
+              ) : state?.status === "loaded" ? (
+                <span className="status">
+                  <Icon name="check" size={14} />
+                  {name} is loaded and ready
+                </span>
+              ) : state?.status === "failed" ? (
+                `Couldn't load ${name}: ${state.error}`
+              ) : (
+                "None. The next image loads one first."
+              )}
+            </span>
+          }
+        >
+          <button className="small" disabled={busy || !up || (!inMemory && Object.keys(names).length === 0)} onClick={() => engine(inMemory ? "unload" : "load")}>
+            {inMemory ? "Unload" : "Load now"}
+          </button>
+        </SettingRow>
         {preload !== null && (
           <SettingRow id="engine-preload" label="Load a model when Glint Studio starts" hint="The first image skips the wait. Uses the default model, or the first one installed.">
             <input id="engine-preload" type="checkbox" className="switch" role="switch" checked={preload} disabled={busy} onChange={(e) => savePreload(e.target.checked)} />
