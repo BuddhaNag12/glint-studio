@@ -5,9 +5,33 @@ on:
     branches: [main]
   pull_request:
 
+# A new push to a PR cancels its older run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
+  # A PR runs only the jobs its files touch; main always runs both.
+  changes:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    outputs:
+      host: ${{ steps.filter.outputs.host }}
+      desktop: ${{ steps.filter.outputs.desktop }}
+    steps:
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            host: [host/**, catalog/**, .github/workflows/ci.yml]
+            desktop: [apps/desktop/**, host/providers.example.json, host/pyproject.toml, .github/workflows/ci.yml]
+
   host:
     name: host (pytest, ${{ matrix.os }})
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name == 'push' || needs.changes.outputs.host == 'true') }}
     strategy:
       fail-fast: false
       matrix:
@@ -25,6 +49,8 @@ jobs:
 
   desktop:
     name: desktop (${{ matrix.os }})
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name == 'push' || needs.changes.outputs.desktop == 'true') }}
     strategy:
       fail-fast: false
       matrix:
@@ -37,7 +63,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Linux system deps
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -52,5 +78,7 @@ jobs:
         run: npm run build
       - name: Rust tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
+      # The release build takes ~2 minutes; Rust tests already compile the app on a PR, so it runs on main only.
       - name: App build (no installer)
+        if: github.event_name == 'push'
         run: npx tauri build --no-bundle
